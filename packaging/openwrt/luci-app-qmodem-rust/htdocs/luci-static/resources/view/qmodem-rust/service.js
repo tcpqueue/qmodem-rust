@@ -24,8 +24,8 @@ function field(label, input, description) {
     ]);
 }
 function select(id, choices, selected) {
-    return E('select', { 'id': id, 'class': 'cbi-input-select', 'disabled': !L.hasViewPermission() }, choices.map(function(item) {
-        return E('option', { 'value': item[0], 'selected': item[0] === selected }, item[1]);
+    return E('select', { 'id': id, 'class': 'cbi-input-select', 'disabled': !L.hasViewPermission() || null }, choices.map(function(item) {
+        return E('option', { 'value': item[0], 'selected': item[0] === selected ? true : null }, item[1]);
     }));
 }
 return view.extend({
@@ -34,7 +34,7 @@ return view.extend({
     },
     render: function(data) {
         var cfg = data[0], status = E('span'), authConfigured = cfg.auth_configured;
-        var readonly = !L.hasViewPermission();
+        var readonly = !L.hasViewPermission() || null;
         var dashboardHost = cfg.listen;
         if (['0.0.0.0', '::', '127.0.0.1', '::1'].indexOf(dashboardHost) !== -1)
             dashboardHost = window.location.hostname;
@@ -96,7 +96,7 @@ return view.extend({
                 restartState.textContent = _('Token saved. Restart the service manually to apply it.') + ' ' + (error.message || error);
             });
         };
-        var createToken = E('button', { 'class': 'cbi-button cbi-button-action', 'disabled': readonly || authConfigured,
+        var createToken = E('button', { 'class': 'cbi-button cbi-button-action', 'disabled': (readonly || authConfigured) ? true : null,
             'click': ui.createHandlerFn(this, function() { return execute(['init-auth']).then(showToken).catch(notify); })
         }, _('Initialize access token'));
         var resetToken = E('button', { 'class': 'cbi-button cbi-button-action', 'disabled': readonly,

@@ -51,3 +51,11 @@ service-info、日志和普通业务 API 不返回令牌。
 2026-09-12 实机验证：新登录 LuCI 页面和菜单均返回 200；新会话包含 QModem
 read/write access-group，reset-auth 文件执行权限通过，service-info 的 RPC 调用成功。
 ARM64 reset-auth 在临时配置上通过验证；实际使用中的令牌没有被替换。
+
+### 控件全部禁用的修复
+
+LuCI 的 E()/dom.attr() 通过 setAttribute 写入非 null 属性，disabled=false 会生成
+属性 disabled="false"，浏览器仍然禁用控件。selected=false 同样会把选项标成选中。
+权限允许时现在传 null 以省略属性；只有确实禁用或选中时才传 true。
+新增渲染回归测试覆盖管理员可操作、只读用户受限、首次生成令牌和默认选中项。
+此问题与 ACL、旧会话问题不同，不能通过重新登录修复。
