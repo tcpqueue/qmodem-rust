@@ -81,6 +81,8 @@ SSE 的 `serial` 事件包含 `correlation` 和 `line`，关联类型为 `unsoli
 {"operation":"set_sim_slot","slot":2}
 ```
 
+**当前 set_sim_slot 只执行厂商切卡，不自动重拨。** 上游主 RPC 还要求切卡后重拨成功；这部分尚未迁移，当前响应成功不能解释为网络已恢复。MT5700 端口无法打开时，当前不会预先写软件卡槽记录，与上游无条件先写记录仍有差别。
+
 移远允许槽位 1/2。设置返回 OK 后立即回读，失败时每次等待一秒，最多五次回读（第五次失败后仍等待一秒）。整个过程不释放端口队列；HTTP 调用者断开也会完成已开始的事务。未确认切换时返回 HTTP 502 `sim_switch_unconfirmed`，`error.details.data` 包含请求槽位、最后读到的槽位和回读次数。无可解析槽位时为 null。
 
 MT5700 允许槽位 0/1。卡槽读取和能力信息不发送 AT，返回 `source=software`、`hardware_verified=false`；切换发送 `AT^SCICHG=0,1` 或 `AT^SCICHG=1,0`。兼容上游在 AT 前记录请求值的顺序，即使模组拒绝也保留请求值。软件记录目录由 `storage.runtime_dir` 指定，默认 `/tmp/qmodem-rust`，必须位于易失存储，已有目录须为服务用户所有的私有目录。父目录必须已存在。
