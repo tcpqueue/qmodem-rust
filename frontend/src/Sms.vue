@@ -16,6 +16,7 @@ import {
   ElInputNumber,
   ElMessageBox,
 } from "element-plus";
+import { requestId as newRequestId } from "./browser-utils";
 import Forwarding from "./Forwarding.vue";
 const props = defineProps<{ token: string; modem: string }>();
 const historyFile = ref<HTMLInputElement | null>(null);
@@ -32,7 +33,7 @@ const tab = ref("history"),
   rawPdu = ref(""),
   memory = ref("SM"),
   cursor = ref<number | null>(null),
-  requestId = ref(crypto.randomUUID()),
+  requestId = ref(newRequestId()),
   settings = ref<any>({
     mode: "manual",
     poll_interval_seconds: 30,
@@ -112,12 +113,12 @@ async function send() {
     error.value = "发送结果未知，请先查询模组或运营商记录，避免重复发送。";
   if (result.delivery_status === "submitted") {
     content.value = "";
-    requestId.value = crypto.randomUUID();
+    requestId.value = newRequestId();
   }
   await load();
 }
 watch([recipient, content, rawPdu], () => {
-  requestId.value = crypto.randomUUID();
+  requestId.value = newRequestId();
 });
 onMounted(() =>
   run(async () => {
@@ -177,7 +178,7 @@ async function sendPdu() {
   notice.value = statuses[result.delivery_status] || result.delivery_status;
   if (result.delivery_status === "submitted") {
     rawPdu.value = "";
-    requestId.value = crypto.randomUUID();
+    requestId.value = newRequestId();
   }
   await load();
 }

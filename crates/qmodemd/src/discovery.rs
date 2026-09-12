@@ -30,6 +30,7 @@ pub struct Device {
     pub valid_at_ports: Vec<String>,
     pub modem: Option<Modem>,
     pub errors: Vec<String>,
+    pub probe_notes: Vec<String>,
 }
 fn read(path: impl AsRef<Path>) -> String {
     fs::read_to_string(path)
@@ -125,6 +126,7 @@ pub fn scan(sys: &Path) -> Result<Vec<Device>> {
                 valid_at_ports: vec![],
                 modem: None,
                 errors: vec![],
+                probe_notes: Vec::new(),
             };
             if usb {
                 let rule = &rules["modem_port_rule"]["usb"][format!("{vid}:{pid}")];
@@ -295,7 +297,9 @@ pub async fn probe(mut device: Device, pool: &PortPool) -> Device {
     for (path, result) in results {
         match result {
             Ok(()) => device.valid_at_ports.push(path),
-            Err(_) => device.errors.push(format!("{path}: identification failed")),
+            Err(_) => device
+                .probe_notes
+                .push(format!("{path}: no AT identification response")),
         }
     }
     'ports: for path in &device.valid_at_ports {
@@ -333,6 +337,11 @@ pub async fn probe(mut device: Device, pool: &PortPool) -> Device {
                 device.modem = modem_config(&device, model.clone(), profile.clone());
             }
         }
+    }
+    if device.valid_at_ports.is_empty() {
+        device
+            .errors
+            .push("未找到可响应的 AT 端口，请检查驱动、端口占用和模组状态".into());
     }
     device
 }

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { cloneConfig } from "./browser-utils";
 import { onMounted, ref } from "vue";
 import {
   ElButton,
@@ -85,15 +86,16 @@ function addSink() {
     id: `sink_${settings.value.forwarding.length + 1}`,
     enabled: false,
     max_attempts: 5,
-    target: { type: "webhook", ...structuredClone(templates.webhook) },
+    target: { type: "webhook", ...cloneConfig(templates.webhook) },
   });
 }
 function change(sink: any, type: string) {
-  sink.target = { type, ...structuredClone(templates[type]) };
+  sink.target = { type, ...cloneConfig(templates[type]) };
 }
 onMounted(() => run(load));
 </script>
 <template>
+  <ElAlert v-if="error && !settings" :title="error" type="error" :closable="false" />
   <div v-if="settings">
     <ElAlert
       v-if="error"

@@ -275,7 +275,7 @@ impl Dial {
                 _ => format!("AT+QNETDEVCTL=3,{pdp},1"),
             }
         } else {
-            format!("AT^NDISDUP=1,{pdp}")
+            format!("AT^NDISDUP={pdp},1")
         }));
     }
 }
@@ -362,6 +362,38 @@ impl Program for Dial {
     }
 }
 /// netifd owns DHCP, QMI/MBIM session negotiation, DNS and IPv6 lifetimes.
+/// Infer only a unique network device belonging to the same physical modem.
+fn resolve_data_interface(modem: &mut Modem, sys: &std::path::Path) -> Result<()> {
+    if let Some(device) = modem.interface.as_deref().filter(|s| !s.trim().is_empty()) {
+        crate::config::validate_interface(device)?;
+        ensure!(
+            sys.join("class/net").join(device).exists(),
+            "配置的数据网卡不存在，请重新选择模组数据网卡"
+        );
+        return Ok(());
+    }
+    let devices = crate::discovery::scan(sys)?;
+    let canonical =
+        std::fs::canonicalize(&modem.at_port).unwrap_or_else(|_| modem.at_port.clone().into());
+    let mut candidates: Vec<String> = devices
+        .iter()
+        .filter(|d| {
+            d.at_candidates
+                .iter()
+                .any(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.into()) == canonical)
+        })
+        .flat_map(|d| d.network_interfaces.iter().cloned())
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    ensure!(
+        candidates.len() == 1,
+        "未配置数据网卡，且无法唯一识别。USB 仅用于 AT 时，请连接转接板网口并在联网配置中选择对应网卡"
+    );
+    modem.interface = candidates.pop();
+    Ok(())
+}
+
 /// TOML remains the source of truth; interfaces are added dynamically via ubus.
 pub fn plan(modem: &Modem, c: &Credentials) -> Result<Value> {
     modem.network.validate()?;
@@ -459,6 +491,15 @@ impl Manager {
         runtime: vendor::Runtime,
         operation: &str,
     ) -> Result<Value> {
+        let mut modem = modem;
+        if ["connect", "redial", "plan", "status", "disconnect"].contains(&operation)
+            && modem.network.driver == Driver::At
+        {
+            let resolved = resolve_data_interface(&mut modem, std::path::Path::new("/sys"));
+            if operation != "status" && operation != "disconnect" {
+                resolved?;
+            }
+        }
         let family = vendor::family(&modem)?;
         let slot = if family == Family::TdtechMt5700 {
             Some(runtime.slot(&modem.id)?)
@@ -485,10 +526,40 @@ impl Manager {
         } else {
             slot
         };
+        if let Some(device) = modem.interface.as_deref()
+            && std::path::Path::new("/etc/openwrt_release").is_file()
+        {
+            let dump = ubus("network.interface", "dump", &json!({})).await?;
+            if let Some(existing) = dump["interface"].as_array().and_then(|items| {
+                items.iter().find(|v| {
+                    v["interface"] != interface_name(&modem)
+                        && v["interface"] != format!("{}v6", interface_name(&modem))
+                        && (v["device"] == device || v["l3_device"] == device)
+                })
+            }) {
+                let mut value = existing.clone();
+                value["managed_by"] = json!("openwrt");
+                if operation == "status" {
+                    return Ok(value);
+                }
+                if operation == "connect" && existing["up"] == true {
+                    value["state"] = json!("connected");
+                    value["message"] = json!("数据网卡已由 OpenWrt 接口连接，无需重复拨号");
+                    return Ok(value);
+                }
+                if operation != "plan" {
+                    anyhow::bail!(
+                        "数据网卡已由 OpenWrt 接口 {} 管理，请在 LuCI 网络接口中操作，避免重复 DHCP 或中断现有连接",
+                        existing["interface"].as_str().unwrap_or("unknown")
+                    );
+                }
+            }
+        }
         let c = credentials(&modem, slot);
-        let object = format!("network.interface.{}", interface_name(&modem));
         if operation == "status" {
-            return ubus(&object, "status", &json!({})).await;
+            let dump = ubus("network.interface", "dump", &json!({})).await?;
+            return Ok(dump["interface"].as_array().and_then(|items| items.iter().find(|v| v["interface"] == interface_name(&modem))).cloned()
+                .unwrap_or_else(|| json!({"state":"disconnected","up":false,"interface":interface_name(&modem),"device":modem.interface})));
         }
         let plan = if operation == "disconnect" {
             json!({})
@@ -505,9 +576,6 @@ impl Manager {
             return Ok(json!({"interface":plan,"hardware_verified":false}));
         }
         let object = format!("network.interface.{}", interface_name(&modem));
-        if operation == "status" {
-            return ubus(&object, "status", &json!({})).await;
-        }
         ensure!(
             std::path::Path::new("/etc/openwrt_release").is_file(),
             "network control requires OpenWrt 24.10 or later"
@@ -528,7 +596,7 @@ impl Manager {
     let down=ubus(&object,"down",&json!({})).await;
     if modem.network.driver==Driver::At && modem.network.pdp_type==Pdp::Ipv4v6 { let _=ubus(&format!("{object}v6"),"down",&json!({})).await; }
     if modem.network.driver==Driver::At{
-     let hang=if family==Family::Quectel{format!("AT+QNETDEVCTL={},2,1",modem.pdp_index)}else{"AT^NDISDUP=0,0".into()};
+     let hang=if family==Family::Quectel{format!("AT+QNETDEVCTL={},2,1",modem.pdp_index)}else{format!("AT^NDISDUP={},0",modem.pdp_index)};
      let replies=pool.get(&modem.at_port).await?.run_named(Box::new(crate::at::Sequence::new(vec![cmd(&hang)],false)),Some(modem.id.clone()),"network_disconnect").await?;
      ensure!(replies.iter().all(|r|r.modem_success),"modem rejected disconnect");
     }
@@ -628,5 +696,41 @@ mod tests {
         let mut m = modem("qualcomm");
         m.network.credentials.apn = "evil\";AT+CFUN=0".into();
         assert!(m.network.validate().is_err());
+    }
+    #[test]
+    fn tdtech_ndis_uses_cid_before_connection_flag() {
+        let mut m = modem("hisilicon");
+        m.manufacturer = "tdtech".into();
+        m.model = "mt5700m-cn".into();
+        m.pdp_index = 5;
+        let mut dial = Dial::new(m, Credentials::default());
+        dial.tail("0");
+        assert_eq!(dial.tail.back().unwrap().bytes, b"AT^NDISDUP=5,1\r\n");
+    }
+    #[test]
+    fn data_interface_inference_requires_same_modem_and_unique_netdev() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let sys = dir.path();
+        let root = sys.join("bus/usb/devices/2-1");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("idVendor"), "3466").unwrap();
+        std::fs::write(root.join("idProduct"), "3301").unwrap();
+        let serial = root.join("2-1:1.1");
+        std::fs::create_dir_all(serial.join("ttyUSB1")).unwrap();
+        symlink("/sys/bus/usb/drivers/option", serial.join("driver")).unwrap();
+        let net = root.join("2-1:1.4");
+        std::fs::create_dir_all(net.join("net/eth2")).unwrap();
+        symlink("/sys/bus/usb/drivers/cdc_ncm", net.join("driver")).unwrap();
+        let mut m = modem("hisilicon");
+        m.at_port = "/dev/ttyUSB1".into();
+        m.interface = None;
+        resolve_data_interface(&mut m, sys).unwrap();
+        assert_eq!(m.interface.as_deref(), Some("eth2"));
+        m.interface = None;
+        std::fs::create_dir_all(net.join("net/eth3")).unwrap();
+        assert!(resolve_data_interface(&mut m, sys).is_err());
+        m.at_port = "/dev/unrelated".into();
+        assert!(resolve_data_interface(&mut m, sys).is_err());
     }
 }

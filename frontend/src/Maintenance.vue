@@ -86,6 +86,7 @@ const points = (key: "rx" | "tx") =>
 const date = (n: number) => new Date(n * 1000).toLocaleString();
 </script>
 <template>
+  <ElAlert v-if="error && !config" :title="error" type="error" :closable="false" />
   <div v-if="config">
     <ElAlert
       v-if="error"

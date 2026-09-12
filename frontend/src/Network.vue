@@ -13,6 +13,7 @@ import {
   ElDivider,
   ElMessageBox,
 } from "element-plus";
+const locationHost = window.location.hostname;
 const props = defineProps<{ token: string; modem: string }>();
 const config = ref<any>(null),
   busy = ref(false),
@@ -50,6 +51,13 @@ async function run(fn: () => Promise<void>) {
 }
 async function load() {
   config.value = await api("config");
+  if (!config.value.interface && config.value.network.driver === "at") {
+    try {
+      const plan = await api("network", "POST", { operation: "plan" });
+      config.value.interface = plan.interface.device || null;
+      if (config.value.interface) notice.value = "已识别模组数据网卡 " + config.value.interface;
+    } catch (e) { notice.value = e instanceof Error ? e.message : String(e); }
+  }
   dns.value = config.value.network.dns.join("\n");
   hooks.value = config.value.network.pre_dial_commands.join("\n");
 }
@@ -63,7 +71,9 @@ async function save() {
     config.value.network.control_port = null;
   if (config.value.network.logical_interface === "")
     config.value.network.logical_interface = null;
-  await api("config", "PUT", config.value);
+  config.value.interface = config.value.interface?.trim() || null;
+  const latest = await api("config");
+  await api("config", "PUT", { ...latest, network: config.value.network, interface: config.value.interface, pdp_index: config.value.pdp_index });
   notice.value = "联网配置已保存";
 }
 async function operate(operation: string) {
@@ -74,9 +84,10 @@ async function operate(operation: string) {
     });
   result.value = await api("network", "POST", { operation });
 }
-onMounted(() => run(load));
+onMounted(() => run(async () => { await load(); await operate("status"); }));
 </script>
 <template>
+  <ElAlert v-if="error && !config" :title="error" type="error" :closable="false" />
   <div v-if="config" class="network-panel">
     <ElAlert
       v-if="error"
@@ -84,20 +95,23 @@ onMounted(() => run(load));
       type="error"
       :closable="false"
     /><ElAlert v-if="notice" :title="notice" type="success" :closable="false" />
+    <ElAlert v-if="result?.managed_by === 'openwrt'" type="info" :closable="false"
+      :title="'当前网卡由 OpenWrt 接口 ' + result.interface + ' 管理：' + (result.up ? '已连接' : '未连接')" />
     <div class="network-buttons">
       <ElButton
         type="primary"
         :loading="busy"
         @click="run(() => operate('connect'))"
         >连接</ElButton
-      ><ElButton :disabled="busy" @click="run(() => operate('redial'))"
+      ><ElButton :disabled="busy || result?.managed_by === 'openwrt'" @click="run(() => operate('redial'))"
         >重新拨号</ElButton
-      ><ElButton :disabled="busy" @click="run(() => operate('disconnect'))"
+      ><ElButton :disabled="busy || result?.managed_by === 'openwrt'" @click="run(() => operate('disconnect'))"
         >断开</ElButton
       ><ElButton :disabled="busy" @click="run(() => operate('status'))"
         >读取连接状态</ElButton
       >
     </div>
+    <p v-if="result?.managed_by === 'openwrt'"><a :href="'http://' + locationHost + '/cgi-bin/luci/admin/network/network'" target="_blank" rel="noopener">在 LuCI 中管理当前连接</a></p>
     <ElForm label-position="top" class="network-form">
       <ElFormItem label="自动联网"
         ><ElSwitch v-model="config.network.auto_connect" /></ElFormItem

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { cloneConfig } from "./browser-utils";
 import { computed, onMounted, ref, watch } from "vue";
 import {
   ElButton,
@@ -98,10 +99,14 @@ async function select() {
   usage.value = null;
   result.value = null;
   capabilities.value = [];
-  if (selected.value)
-    capabilities.value = (
-      await api(`modems/${selected.value}/capabilities`)
-    ).operations;
+  mode.value = "";
+  networks.value = [];
+  imei.value = "";
+  sim.value = current.value?.manufacturer === "tdtech" ? 0 : 1;
+  if (selected.value) {
+    capabilities.value = (await api(`modems/${selected.value}/capabilities`)).operations;
+    if (current.value?.enabled) status.value = await api(`modems/${selected.value}/status`);
+  }
 }
 watch(selected, () => run(select));
 onMounted(() =>
@@ -127,7 +132,7 @@ async function probe(device: RecordData) {
   );
 }
 async function register(device: RecordData) {
-  config.value = structuredClone(device.modem);
+  config.value = cloneConfig(device.modem);
   editor.value = true;
 }
 async function edit() {
@@ -154,6 +159,9 @@ function create() {
 }
 async function save() {
   if (!config.value) return;
+  for (const field of ["sms_at_port", "interface"]) {
+    config.value[field] = config.value[field]?.trim() || null;
+  }
   await api(
     `modems/${encodeURIComponent(config.value.id)}/config`,
     "PUT",
@@ -261,6 +269,11 @@ const metrics = [
           {{ device.network_interfaces.join(" / ") || "网卡未就绪" }}
         </p>
         <p>AT 候选端口：{{ device.at_candidates.join(" / ") || "无" }}</p>
+        <ElAlert v-if="device.modem" type="success" :closable="false"
+          :title="'已识别 AT 端口：' + device.valid_at_ports.join(' / ')" />
+        <details v-if="device.probe_notes?.length"><summary>其他端口探测记录（不影响已识别的 AT 端口）</summary>
+          <p v-for="note in device.probe_notes" :key="note">{{ note }}</p>
+        </details>
         <p v-if="device.voice_pcm_port">
           语音 PCM：{{ device.voice_pcm_port }}
         </p>
@@ -346,11 +359,16 @@ const metrics = [
                 v-for="[key, label] in metrics"
                 :key="key"
                 :label="label"
-                >{{ status[key] ?? "—" }}</ElDescriptionsItem
+                >{{ key === "sim_status" ? ({ready:"就绪", "not inserted":"未插卡"}[status[key] as string] || status[key]) : (status[key] ?? "未提供") }}</ElDescriptionsItem
               ><ElDescriptionsItem label="PDP 地址">{{
                 status.addresses.join(" / ") || "—"
               }}</ElDescriptionsItem></ElDescriptions
             >
+            <h3>载波与带宽</h3>
+            <ElTable v-if="status.carriers?.length" :data="status.carriers">
+              <ElTableColumn v-for="[key,label] in [['rat','网络'],['role','载波'],['band','频段'],['arfcn','中心频点'],['dl_bandwidth_khz','下行带宽 kHz'],['ul_bandwidth_khz','上行带宽 kHz']]" :key="key" :prop="key" :label="label" min-width="100" />
+            </ElTable>
+            <ElEmpty v-else description="模组未提供载波信息" />
             <h3>服务小区</h3>
             <ElTable empty-text="暂无数据" :data="status.cells"
               ><ElTableColumn
@@ -411,6 +429,7 @@ const metrics = [
             </section>
             <section>
               <h3>网络偏好</h3>
+              <ElButton :disabled="busy" @click="run(() => action('get_network_prefer').then(v => { networks = Object.keys(v.network_prefer).filter(k => v.network_prefer[k] === '1'); }))">读取当前偏好</ElButton>
               <ElCheckboxGroup v-model="networks"
                 ><ElCheckbox
                   v-for="v in ['3G', '4G', '5G']"

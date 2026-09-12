@@ -139,7 +139,10 @@ impl StatusProgram {
                         self.add(key, cmd);
                     }
                 } else {
+                    self.add("operator", "AT+COPS?");
+                    self.add("iccid_tdtech", "AT^ICCID?");
                     self.add("serving", "AT^MONSC");
+                    self.add("frequency", "AT^HFREQINFO?");
                 }
             }
             "iccid" if !reply.response.contains("+ICCID:") => {
@@ -233,8 +236,9 @@ fn report(modem: &Modem, records: &Records) -> Value {
         .and_then(|l| fields(l).first().and_then(|s| s.parse::<u8>().ok()))
         .filter(|n| *n <= 31);
     let operator = pref(records, "operator", "+COPS:").and_then(|l| fields(l).get(2).cloned());
-    let iccid =
-        pref(records, "iccid", "+ICCID:").or_else(|| pref(records, "iccid_fallback", "+CCID:"));
+    let iccid = pref(records, "iccid", "+ICCID:")
+        .or_else(|| pref(records, "iccid_fallback", "+CCID:"))
+        .or_else(|| pref(records, "iccid_tdtech", "^ICCID:"));
     let addresses = records
         .iter()
         .filter(|(key, _)| key.starts_with("address_"))
@@ -250,11 +254,41 @@ fn report(modem: &Modem, records: &Records) -> Value {
                 .is_ok_and(|ip| !ip.is_unspecified())
         })
         .collect::<Vec<_>>();
-    let cells = if quectel {
+    let mut cells = if quectel {
         quectel_cells(records)
     } else {
         mt_cells(records)
     };
+    let carriers = mt_carriers(records);
+    if !quectel {
+        for cell in &mut cells {
+            let rat = cell["rat"].as_str().unwrap_or("");
+            let family = if rat.contains("NR") && rat != "LTE-NR" {
+                "NR"
+            } else {
+                "LTE"
+            };
+            if let Some(carrier) = carriers
+                .iter()
+                .find(|c| c["rat"] == family && c["role"] == "PCC")
+            {
+                cell["band"] = carrier["band"].clone();
+                cell["dl_bandwidth_khz"] = carrier["dl_bandwidth_khz"].clone();
+            }
+        }
+    }
+    let failed_queries: Vec<_> = records
+        .iter()
+        .filter(|(_, r)| !r.modem_success)
+        .map(|(k, _)| k.as_str())
+        .collect();
+    // Optional SIM phonebook and capability queries must not label a healthy modem as failed.
+    let partial = failed_queries.iter().any(|k| {
+        matches!(
+            *k,
+            "model" | "manufacturer" | "revision" | "sim_status" | "imei" | "serving"
+        )
+    });
     let raw = records
         .iter()
         .map(|(key, reply)| {
@@ -270,7 +304,7 @@ fn report(modem: &Modem, records: &Records) -> Value {
         "phone_number":pref(records,"number","+CNUM:").and_then(|l|fields(l).get(1).cloned()),"operator":operator,
         "sim_slot":pref(records,"sim_slot","+QUIMSLOT:").or_else(||pref(records,"sim_slot","+QUSIMSLOT:")),
         "network_type":pref(records,"network_type","+QNWINFO:").and_then(|l|fields(l).first().cloned()).or_else(||if quectel{None}else{cells.first().and_then(|c|c["rat"].as_str().map(str::to_owned))}),"csq":csq,"rssi_dbm":csq.map(|n|-113+2*i16::from(n)),
-        "pdp_active":!addresses.is_empty(),"addresses":addresses,"cells":cells,"partial":records.values().any(|r|!r.modem_success),"queries":raw})
+        "pdp_active":!addresses.is_empty(),"addresses":addresses,"cells":cells,"partial":partial,"unavailable_queries":failed_queries,"carriers":carriers,"queries":raw})
 }
 fn map_fields(f: &[String], pairs: &[(&str, usize)]) -> Value {
     let mut value = serde_json::Map::new();
@@ -400,6 +434,45 @@ fn quectel_cells(records: &Records) -> Vec<Value> {
                 c["rat"] = json!("NR");
                 result.push(c);
             }
+        }
+    }
+    result
+}
+fn mt_carriers(records: &Records) -> Vec<Value> {
+    let Some(reply) = records.get("frequency").filter(|r| r.modem_success) else {
+        return vec![];
+    };
+    let mut result = Vec::new();
+    for line in reply
+        .response
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("^HFREQINFO:"))
+    {
+        let f = fields(line);
+        let rat = match f.get(1).map(String::as_str) {
+            Some("6") => "LTE",
+            Some("7") => "NR",
+            _ => continue,
+        };
+        for (index, c) in f
+            .get(2..)
+            .unwrap_or(&[])
+            .as_chunks::<7>()
+            .0
+            .iter()
+            .enumerate()
+            .take(4)
+        {
+            let nums: Option<Vec<u64>> = c.iter().map(|s| s.parse().ok()).collect();
+            let Some(n) = nums else {
+                continue;
+            };
+            if n[0] == 0 || n[1] == 0 {
+                continue;
+            }
+            result.push(json!({"rat":rat,"role":if index==0{"PCC"}else{"SCC"},"band":n[0],"arfcn":n[1],
+                "dl_frequency_khz":if rat=="LTE"{n[2].checked_mul(100)}else{Some(n[2])},"dl_bandwidth_khz":n[3],
+                "ul_arfcn":n[4],"ul_frequency_khz":if rat=="LTE"{n[5].checked_mul(100)}else{Some(n[5])},"ul_bandwidth_khz":n[6]}));
         }
     }
     result
@@ -610,5 +683,51 @@ OK",
         assert_eq!(value["cells"][0]["rsrp"], "-94");
         assert_eq!(value["cells"][0]["rsrq"], "-10");
         assert_eq!(value["cells"][0]["sinr"], "30");
+    }
+    #[test]
+    fn mt5700_manual_carriers_and_optional_phone_number() {
+        let mut m = modem();
+        m.manufacturer = "tdtech".into();
+        m.model = "mt5700m-cn".into();
+        m.platform = "hisilicon".into();
+        let r = Records::from([
+            ("number".into(), reply("ERROR")),
+            (
+                "operator".into(),
+                reply("+COPS: 0,0,\"CHINA TELECOM\",12\r\nOK"),
+            ),
+            (
+                "iccid_tdtech".into(),
+                reply("^ICCID: 89000000000000000000\r\nOK"),
+            ),
+            (
+                "serving".into(),
+                reply("^MONSC: NR,460,11,428910,1,ABC,1F3,ABC,-80,-10,20\r\nOK"),
+            ),
+            (
+                "frequency".into(),
+                reply(
+                    "^HFREQINFO: 0,7,1,426000,2130000,40000,388000,1940000,40000,78,633984,3509760,100000,633984,3509760,100000\r\nOK",
+                ),
+            ),
+        ]);
+        let v = report(&m, &r);
+        assert_eq!(v["partial"], false);
+        assert_eq!(v["unavailable_queries"], json!(["number"]));
+        assert_eq!(v["iccid"], "89000000000000000000");
+        assert_eq!(v["operator"], "CHINA TELECOM");
+        assert_eq!(v["cells"][0]["band"], 1);
+        assert_eq!(v["cells"][0]["arfcn"], "428910");
+        assert_eq!(v["carriers"][0]["arfcn"], 426000);
+        assert_eq!(v["carriers"][1]["role"], "SCC");
+        assert_eq!(v["carriers"][1]["dl_frequency_khz"], 3509760);
+        let lte = Records::from([(
+            "frequency".into(),
+            reply("^HFREQINFO: 0,6,18,5925,8675,20000,23925,8225,20000\r\nOK"),
+        )]);
+        assert_eq!(mt_carriers(&lte)[0]["dl_frequency_khz"], 867500);
+        let mut failed = r.clone();
+        failed.insert("serving".into(), reply("ERROR"));
+        assert_eq!(report(&m, &failed)["partial"], true);
     }
 }
