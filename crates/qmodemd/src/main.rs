@@ -62,6 +62,8 @@ enum Command {
     Interfaces,
     /// Create a first access token, print it once, and store only its hash.
     InitAuth,
+    /// Replace the access token and print it once. Restart the service to apply.
+    ResetAuth,
 }
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -116,6 +118,7 @@ async fn main() -> Result<()> {
         Command::ServiceInfo => println!("{}", http::service_info(&cfg)),
         Command::Interfaces => unreachable!(),
         Command::InitAuth => println!("{}", json!({"token":auth::initialize(&cli.config)?})),
+        Command::ResetAuth => println!("{}", json!({"token":auth::reset(&cli.config)?})),
         Command::Serve => {
             logging::init(&cfg.logging)?;
             if let Err(error) = serve(cfg, cli.config).await {

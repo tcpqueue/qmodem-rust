@@ -77,18 +77,41 @@ return view.extend({
             }) }, label);
         }.bind(this);
         var tokenState = E('span', {}, authConfigured ? _('Configured') : _('Not configured'));
-        var createToken = E('button', { 'class': 'cbi-button cbi-button-action', 'disabled': readonly || authConfigured, 'click': ui.createHandlerFn(this, function() {
-            return execute(['init-auth']).then(function(result) {
-                authConfigured = true;
-                tokenState.textContent = _('Configured');
-                createToken.disabled = true;
-                ui.showModal(_('Access token'), [
-                    E('p', {}, _('Save this token now. It is shown only once. The server stores its hash. Restart the service after saving settings.')),
-                    E('textarea', { 'class': 'cbi-input-textarea', 'readonly': true, 'rows': 2, 'aria-label': _('Access token') }, result.token),
-                    E('div', { 'class': 'right' }, E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('Close')))
+        var showToken = function(result) {
+            authConfigured = true;
+            tokenState.textContent = _('Configured');
+            createToken.disabled = true;
+            var restartState = E('p', {}, _('Restarting the service to apply the token…'));
+            ui.showModal(_('Access token'), [
+                E('p', {}, _('Save this token now. The server stores only its hash and cannot display it again.')),
+                E('textarea', { 'class': 'cbi-input-textarea', 'readonly': true, 'rows': 3, 'aria-label': _('Access token') }, result.token),
+                restartState,
+                E('div', { 'class': 'right' }, E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('Close')))
+            ]);
+            return control(serviceName, 'restart').then(function(code) {
+                if (code) throw new Error(_('Service action failed'));
+                restartState.textContent = _('Token is active. Use it to connect to the modem dashboard.');
+                return statusData().then(update);
+            }).catch(function(error) {
+                restartState.textContent = _('Token saved. Restart the service manually to apply it.') + ' ' + (error.message || error);
+            });
+        };
+        var createToken = E('button', { 'class': 'cbi-button cbi-button-action', 'disabled': readonly || authConfigured,
+            'click': ui.createHandlerFn(this, function() { return execute(['init-auth']).then(showToken).catch(notify); })
+        }, _('Initialize access token'));
+        var resetToken = E('button', { 'class': 'cbi-button cbi-button-action', 'disabled': readonly,
+            'click': ui.createHandlerFn(this, function() {
+                ui.showModal(_('Regenerate access token'), [
+                    E('p', {}, _('The previous token will stop working. The service will restart, and you will need to reconnect the dashboard with the new token. Modem settings and SMS history are kept.')),
+                    E('div', { 'class': 'right' }, [
+                        E('button', { 'class': 'cbi-button', 'click': ui.hideModal }, _('Cancel')), ' ',
+                        E('button', { 'class': 'cbi-button cbi-button-negative', 'click': ui.createHandlerFn(this, function() {
+                            return execute(['reset-auth']).then(showToken).catch(notify);
+                        }) }, _('Regenerate access token'))
+                    ])
                 ]);
-            }).catch(notify);
-        }) }, _('Initialize access token'));
+            })
+        }, _('Regenerate access token'));
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', {}, 'QModem Rust'),
             E('p', {}, _('Manage service settings here. Open the dashboard for modem features.')),
@@ -106,7 +129,8 @@ return view.extend({
                 field(_('Network device'), device, _('Bind incoming connections to this Linux network device, for example br-lan. An unavailable device prevents startup.')),
                 field(_('Listen address'), listen, _('IPv4 or IPv6 address. Use 0.0.0.0 or :: for all addresses on the selected device.')),
                 field(_('Port'), port, '1–65535'),
-                E('p', {}, [tokenState, ' ', createToken])
+                E('p', {}, [tokenState, ' ', createToken, ' ', resetToken]),
+                E('p', {}, _('If you lost the token, regenerate it here. The original token cannot be recovered from its hash.'))
             ]),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', {}, _('Logging')),

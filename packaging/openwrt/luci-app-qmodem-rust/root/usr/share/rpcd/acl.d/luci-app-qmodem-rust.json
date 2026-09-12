@@ -37,6 +37,9 @@
         ],
         "/usr/sbin/qmodemd --config /etc/qmodem-rust.toml init-auth": [
           "exec"
+        ],
+        "/usr/sbin/qmodemd --config /etc/qmodem-rust.toml reset-auth": [
+          "exec"
         ]
       }
     }

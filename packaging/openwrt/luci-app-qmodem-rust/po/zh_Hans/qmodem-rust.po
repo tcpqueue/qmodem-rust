@@ -141,3 +141,24 @@ msgstr "在此管理服务设置，模组功能请进入独立管理后台。"
 
 msgid "Open modem dashboard"
 msgstr "打开模组管理后台"
+
+msgid "Regenerate access token"
+msgstr "重新生成访问令牌"
+
+msgid "Save this token now. The server stores only its hash and cannot display it again."
+msgstr "请保存此令牌。后台只存储哈希，关闭后无法再次查看原文。"
+
+msgid "Restarting the service to apply the token…"
+msgstr "正在重启服务，使令牌生效……"
+
+msgid "Token is active. Use it to connect to the modem dashboard."
+msgstr "令牌已生效，可用它连接模组管理后台。"
+
+msgid "Token saved. Restart the service manually to apply it."
+msgstr "令牌已保存，请手动重启服务使其生效。"
+
+msgid "The previous token will stop working. The service will restart, and you will need to reconnect the dashboard with the new token. Modem settings and SMS history are kept."
+msgstr "原令牌将失效，服务会重启，需要使用新令牌重新连接后台。模组设置和短信历史会保留。"
+
+msgid "If you lost the token, regenerate it here. The original token cannot be recovered from its hash."
+msgstr "忘记令牌时可在此重新生成，无法从哈希恢复原令牌。"

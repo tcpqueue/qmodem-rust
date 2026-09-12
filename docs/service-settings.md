@@ -32,3 +32,22 @@ qmodemd --config /etc/qmodem-rust.toml set-service --listen 0.0.0.0 --port 8088 
 CLI 的 `--interface any` 清除网卡限制。该关键字只存在于 CLI；TOML 使用 `interface = ""`。
 
 SQLite 默认文件为 `/etc/qmodem-rust/data.sqlite3`，避免 OpenWrt 的 `/var` 临时目录在重启后丢失历史。可在 TOML 中改到外置存储的绝对路径；当前仅建立初始结构，短信和统计的写入策略仍在迁移。
+
+## 令牌遗失与新安装菜单
+
+LuCI 位于“服务 → QModem Rust”。安装后原有 LuCI 登录会话可能仍使用安装前的
+access-group 权限，导致菜单被隐藏；退出 LuCI 后重新登录，再打开
+/cgi-bin/luci/admin/services/qmodem-rust。清理菜单缓存不能替代会话重新认证。
+
+首次部署使用“初始化访问令牌”。遗失时使用“重新生成访问令牌”，确认后生成新的
+随机令牌并自动重启 QModem 服务。旧令牌失效，需要重新连接 WebUI，模组配置和短信
+历史保留。新令牌在弹窗中显示一次；即使重启失败，弹窗也保留令牌和手动重启提示。
+后台只保存哈希，不能再次显示已经关闭的原令牌。
+
+命令行对应 qmodemd --config /etc/qmodem-rust.toml reset-auth。
+命令只更新令牌哈希，需重启服务生效。此命令仅通过 LuCI 写权限的文件执行 ACL 开放，
+service-info、日志和普通业务 API 不返回令牌。
+
+2026-09-12 实机验证：新登录 LuCI 页面和菜单均返回 200；新会话包含 QModem
+read/write access-group，reset-auth 文件执行权限通过，service-info 的 RPC 调用成功。
+ARM64 reset-auth 在临时配置上通过验证；实际使用中的令牌没有被替换。
