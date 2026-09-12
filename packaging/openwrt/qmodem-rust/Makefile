@@ -5,7 +5,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=qmodem-rust
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_LICENSE:=GPL-3.0-only
 PKG_BUILD_DEPENDS:=rust/host
 PKG_BUILD_PARALLEL:=1
@@ -36,7 +36,9 @@ endef
 define Build/Prepare
 	$(call Build/Prepare/Default)
 	$(CP) $(QMODEM_SOURCE_DIR)/Cargo.toml $(QMODEM_SOURCE_DIR)/Cargo.lock $(QMODEM_SOURCE_DIR)/NOTICE.md $(PKG_BUILD_DIR)/
-	$(CP) $(QMODEM_SOURCE_DIR)/crates $(QMODEM_SOURCE_DIR)/config $(QMODEM_SOURCE_DIR)/data $(PKG_BUILD_DIR)/
+	$(CP) $(QMODEM_SOURCE_DIR)/crates $(QMODEM_SOURCE_DIR)/config $(QMODEM_SOURCE_DIR)/data $(QMODEM_SOURCE_DIR)/licenses $(PKG_BUILD_DIR)/
+	$(INSTALL_DIR) $(PKG_BUILD_DIR)/frontend
+	$(CP) $(QMODEM_SOURCE_DIR)/frontend/dist $(PKG_BUILD_DIR)/frontend/
 endef
 
 define Package/qmodem-rust/install

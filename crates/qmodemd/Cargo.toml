@@ -22,7 +22,7 @@ toml_edit = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 socket2 = { version = "0.6", features = ["all"] }
-nix = { version = "0.30", features = ["net", "term", "fs", "poll"] }
+nix = { version = "0.30", features = ["net", "term", "fs", "poll", "user"] }
 sha2 = "0.10"
 getrandom = "0.4"
 subtle = "2"
@@ -34,3 +34,4 @@ futures-util = "0.3"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+tokio = { version = "1", features = ["test-util"] }

@@ -87,6 +87,8 @@ impl std::fmt::Debug for Auth {
 #[serde(deny_unknown_fields)]
 pub struct Storage {
     pub sqlite: String,
+    #[serde(default = "default_runtime_dir")]
+    pub runtime_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +110,8 @@ pub struct Modem {
     pub pdp_index: u8,
     #[serde(default)]
     pub apn: String,
+    #[serde(default)]
+    pub bands: crate::vendor::bands::Overrides,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +119,10 @@ pub struct Modem {
 pub enum Bus {
     Usb,
     Pcie,
+}
+
+fn default_runtime_dir() -> String {
+    "/tmp/qmodem-rust".into()
 }
 
 fn enabled() -> bool {
@@ -147,6 +155,13 @@ impl Config {
             "SQLite path must be absolute"
         );
 
+        ensure!(
+            Path::new(&self.storage.runtime_dir).is_absolute(),
+            "runtime_dir must be an absolute path on volatile storage"
+        );
+        for modem in &self.modems {
+            modem.bands.validate()?;
+        }
         validate_interface(&self.server.interface)?;
         ensure!(
             self.auth.token_hash.is_empty()

@@ -8,3 +8,4 @@
 .env.local
 /config/local.toml
 /work/
+/frontend/node_modules/

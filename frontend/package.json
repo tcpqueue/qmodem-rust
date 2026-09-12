@@ -1,0 +1,27 @@
+{
+  "name": "qmodem-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vue-tsc --noEmit && vite build && node scripts/embed.mjs"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "element-plus": "^2.11.2",
+    "vue": "^3.5.21"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.1",
+    "prettier": "3.6.2",
+    "sass": "^1.93.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.5",
+    "vite-plugin-singlefile": "^2.3.0",
+    "vue-tsc": "^3.0.0"
+  }
+}

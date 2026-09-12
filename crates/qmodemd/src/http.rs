@@ -28,6 +28,7 @@ use std::{
 struct AppState {
     config: Config,
     ports: PortPool,
+    runtime: vendor::Runtime,
 }
 type Shared = Arc<AppState>;
 static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -41,6 +42,7 @@ struct ApiError {
     status: StatusCode,
     code: &'static str,
     message: String,
+    details: Option<Value>,
 }
 impl ApiError {
     fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
@@ -48,6 +50,7 @@ impl ApiError {
             status,
             code,
             message: message.into(),
+            details: None,
         }
     }
     fn invalid(message: impl Into<String>) -> Self {
@@ -56,16 +59,17 @@ impl ApiError {
 }
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(json!({"error":{"code":self.code,"message":self.message}})),
-        )
-            .into_response()
+        let mut error = json!({"code":self.code,"message":self.message});
+        if let Some(details) = self.details {
+            error["details"] = details;
+        }
+        (self.status, Json(json!({"error":error}))).into_response()
     }
 }
 impl From<AtError> for ApiError {
     fn from(e: AtError) -> Self {
         let (status, code) = match e.kind {
+            ErrorKind::State => (StatusCode::INTERNAL_SERVER_ERROR, "runtime_state_failed"),
             ErrorKind::Timeout => (StatusCode::GATEWAY_TIMEOUT, "at_timeout"),
             ErrorKind::QueueFull => (StatusCode::TOO_MANY_REQUESTS, "at_queue_full"),
             ErrorKind::Unsynchronized => (StatusCode::CONFLICT, "at_unsynchronized"),
@@ -142,6 +146,10 @@ async fn capabilities(
     let modem = configured_modem(&state, &id)?;
     let mut operations = vec![
         "get_imei",
+        "set_imei",
+        "get_sim_slot",
+        "get_sim_capabilities",
+        "set_sim_slot",
         "get_mode",
         "set_mode",
         "get_network_prefer",
@@ -149,7 +157,7 @@ async fn capabilities(
         "soft_reboot",
     ];
     if modem.manufacturer.eq_ignore_ascii_case("quectel") {
-        operations.extend(["get_sim_slot", "get_5g_lan", "set_5g_lan"]);
+        operations.extend(["get_5g_lan", "set_5g_lan", "get_band_lock", "set_band_lock"]);
     }
     Ok(success(
         json!({"operations":operations,"coverage":"partial","hardware_verified":false}),
@@ -181,7 +189,13 @@ async fn send_at(
             "Could not open the configured AT port",
         )
     })?;
-    let replies = port.execute(vec![step]).await?;
+    let replies = port
+        .run_named(
+            Box::new(crate::at::Sequence::new(vec![step], false)),
+            Some(modem.id.clone()),
+            "raw_at",
+        )
+        .await?;
     Ok(success(json!({"replies":replies})))
 }
 async fn action(
@@ -191,7 +205,17 @@ async fn action(
 ) -> Result<Json<Value>, ApiError> {
     let operation = body(input)?;
     let modem = configured_modem(&state, &id)?;
-    let step = vendor::prepare(modem, &operation).map_err(|e| ApiError::invalid(e.to_string()))?;
+    if let Some(data) = vendor::local(modem, &operation, &state.runtime).map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "runtime_state_failed",
+            "Could not read software SIM state",
+        )
+    })? {
+        return Ok(success(data));
+    }
+    let program = vendor::plan(modem, &operation, &state.runtime)
+        .map_err(|e| ApiError::invalid(e.to_string()))?;
     let port = state.ports.get(&modem.at_port).await.map_err(|_| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -199,21 +223,37 @@ async fn action(
             "Could not open the configured AT port",
         )
     })?;
-    let replies = port.execute(vec![step]).await?;
-    let reply = &replies[0];
-    let data = vendor::interpret(modem, &operation, reply).map_err(|e| {
+    let replies = port
+        .run_named(program, Some(modem.id.clone()), operation.name())
+        .await?;
+    let mut data = vendor::finish(modem, &operation, &replies).map_err(|e| {
         ApiError::new(
             StatusCode::BAD_GATEWAY,
             "invalid_modem_response",
             e.to_string(),
         )
     })?;
-    if !reply.modem_success {
-        return Err(ApiError::new(
-            StatusCode::BAD_GATEWAY,
-            "modem_rejected",
-            format!("The modem returned {}", reply.terminal),
-        ));
+    if data["success"] != true {
+        let (code, message) = match data["error_code"].as_str() {
+            Some("sim_switch_unconfirmed") => (
+                "sim_switch_unconfirmed",
+                "SIM slot did not reach the requested value after five reads",
+            ),
+            Some("imei_unconfirmed") => (
+                "imei_unconfirmed",
+                "IMEI readback did not match the requested value",
+            ),
+            Some("invalid_modem_response") => {
+                ("invalid_modem_response", "No usable query response")
+            }
+            _ => ("modem_rejected", "The modem rejected the operation"),
+        };
+        let mut error = ApiError::new(StatusCode::BAD_GATEWAY, code, message);
+        error.details = Some(data);
+        return Err(error);
+    }
+    if let Some(object) = data.as_object_mut() {
+        object.remove("error_code");
     }
     Ok(success(data))
 }
@@ -245,6 +285,29 @@ async fn events(
         Some((Ok(event), receiver))
     });
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+async fn queues(State(state): State<Shared>) -> Json<Value> {
+    let mut modems = Vec::new();
+    for modem in &state.config.modems {
+        let mut paths = vec![(&modem.at_port, vec!["at"])];
+        if let Some(sms) = &modem.sms_at_port {
+            if sms == &modem.at_port {
+                paths[0].1.push("sms");
+            } else {
+                paths.push((sms, vec!["sms"]));
+            }
+        }
+        let mut ports = Vec::new();
+        for (path, roles) in paths {
+            let snapshot = state.ports.inspect(path).await;
+            ports.push(match snapshot {
+                Some((canonical,queue))=>json!({"path":path,"roles":roles,"canonical_path":canonical,"opened":true,"queue":queue}),
+                None=>json!({"path":path,"roles":roles,"canonical_path":null,"opened":false,"queue":null}),
+            });
+        }
+        modems.push(json!({"id":modem.id,"name":modem.name,"enabled":modem.enabled,"manufacturer":modem.manufacturer,"model":modem.model,"bus":modem.bus,"ports":ports}));
+    }
+    success(json!({"modems":modems,"history_limit_per_port":32,"payloads_included":false}))
 }
 async fn catalog() -> Json<Value> {
     success(
@@ -313,6 +376,7 @@ async fn method_not_allowed() -> ApiError {
 }
 pub fn router(cfg: Config) -> Router {
     let state = Arc::new(AppState {
+        runtime: vendor::Runtime::new(&cfg.storage.runtime_dir),
         config: cfg,
         ports: PortPool::default(),
     });
@@ -325,8 +389,12 @@ pub fn router(cfg: Config) -> Router {
         .route("/api/v1/modems/{id}/actions", post(action))
         .route("/api/v1/modems/{id}/events", get(events))
         .route("/api/v1/catalog", get(catalog))
+        .route("/api/v1/queues", get(queues))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()
+        .route("/", get(crate::web::index))
+        .route("/queues", get(crate::web::index))
+        .route("/licenses", get(crate::web::licenses))
         .route("/api/health", get(health))
         .merge(api)
         .fallback(not_found)
@@ -488,7 +556,111 @@ mod native_api_tests {
                 assert_eq!(value["data"]["replies"][0]["terminal"], "OK");
             }
         }
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/queues")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let snapshot: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 65536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let queue = &snapshot["data"]["modems"][0]["ports"][0]["queue"];
+        assert_eq!(queue["state"], "idle");
+        assert_eq!(queue["completed"], 2);
+        assert_eq!(queue["recent"][0]["operation"], "get_mode");
+        assert_eq!(queue["recent"][0]["modem_id"], "m1");
+        assert!(queue["recent"][0].get("response").is_none());
         close_tx.send(()).unwrap();
         simulator.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod queue_api_tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    #[tokio::test]
+    async fn queue_inspection_requires_auth_and_never_opens_configured_ports() {
+        let mut cfg = Config::parse(include_str!("../../../config/qmodem.example.toml")).unwrap();
+        cfg.auth.token_hash = auth::digest("test-token");
+        cfg.modems.push(serde_json::from_value(json!({"id":"m1","name":"test","manufacturer":"quectel","platform":"qualcomm","bus":"usb","at_port":"/dev/does-not-exist","sms_at_port":"/dev/does-not-exist"})).unwrap());
+        let app = router(cfg);
+        let unauthorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/queues")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), 401);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/queues")
+                    .header(header::AUTHORIZATION, "Bearer test-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body: Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 65536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let ports = body["data"]["modems"][0]["ports"].as_array().unwrap();
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0]["roles"], json!(["at", "sms"]));
+        assert_eq!(ports[0]["opened"], false);
+        assert!(ports[0]["queue"].is_null());
+    }
+    #[tokio::test]
+    async fn mt5700_software_reads_work_without_opening_a_serial_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = Config::parse(include_str!("../../../config/qmodem.example.toml")).unwrap();
+        cfg.storage.runtime_dir = dir.path().join("runtime").to_str().unwrap().into();
+        cfg.auth.token_hash = auth::digest("test-token");
+        cfg.modems.push(serde_json::from_value(json!({"id":"m1","name":"test","manufacturer":"tdtech","model":"mt5700m-cn","platform":"hisilicon","bus":"usb","at_port":"/dev/does-not-exist"})).unwrap());
+        let app = router(cfg);
+        for operation in ["get_sim_slot", "get_sim_capabilities"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/modems/m1/actions")
+                        .header(header::AUTHORIZATION, "Bearer test-token")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(json!({"operation":operation}).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let body: Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), 65536)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(body["data"]["data"]["source"], "software");
+            assert_eq!(body["data"]["data"]["hardware_verified"], false);
+        }
     }
 }

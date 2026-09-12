@@ -6,6 +6,7 @@ mod listener;
 mod logging;
 mod storage;
 mod vendor;
+mod web;
 
 use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};

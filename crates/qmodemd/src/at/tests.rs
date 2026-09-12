@@ -185,3 +185,173 @@ async fn trailing_urc_in_same_read_is_not_discarded() {
     assert!(urc.line.starts_with("+CMTI:"));
     simulator.await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn cancelled_sim_switch_keeps_retries_atomic_and_drains_urcs_during_wait() {
+    use crate::vendor::{self, Operation, Runtime};
+    let device=serde_json::from_value(serde_json::json!({"id":"m1","name":"test","manufacturer":"quectel","platform":"qualcomm","at_port":"/dev/ttyUSB2","bus":"usb"})).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let program = vendor::plan(
+        &device,
+        &Operation::SetSimSlot { slot: 2 },
+        &Runtime::new(dir.path()),
+    )
+    .unwrap();
+    let (client, mut modem) = duplex(4096);
+    let port = Port::start(client);
+    let cloned = port.clone();
+    let mut events = port.subscribe();
+    let first = tokio::spawn(async move { cloned.run(program).await });
+    async fn expect(modem: &mut tokio::io::DuplexStream, expected: &str) {
+        let mut bytes = vec![0; expected.len()];
+        modem.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(bytes, expected.as_bytes());
+    }
+    expect(&mut modem, "AT+QUIMSLOT=2\r\n").await;
+    first.abort();
+    let second = tokio::spawn(async move { port.execute(vec![command("AT")]).await });
+    modem.write_all(b"OK\r\n").await.unwrap();
+    let start = Instant::now();
+    expect(&mut modem, "AT+QUIMSLOT?\r\n").await;
+    assert_eq!(Instant::now(), start);
+    modem
+        .write_all(b"+QUIMSLOT: 1\r\nOK\r\n+CMTI: \"SM\",7\r\n")
+        .await
+        .unwrap();
+    loop {
+        let event = events.recv().await.unwrap();
+        if event.line.starts_with("+CMTI:") {
+            assert_eq!(event.correlation, "unsolicited");
+            break;
+        }
+    }
+    assert_eq!(Instant::now(), start);
+    expect(&mut modem, "AT+QUIMSLOT?\r\n").await;
+    assert_eq!(Instant::now() - start, Duration::from_secs(1));
+    modem.write_all(b"+QUSIMSLOT: 2\r\nOK\r\n").await.unwrap();
+    expect(&mut modem, "AT\r\n").await;
+    modem.write_all(b"second\r\nOK\r\n").await.unwrap();
+    assert!(
+        second.await.unwrap().unwrap()[0]
+            .response
+            .contains("second")
+    );
+}
+
+#[tokio::test]
+async fn continue_on_modem_error_keeps_next_reply_and_trailing_urc_separate() {
+    let (client, mut modem) = duplex(4096);
+    let port = Port::start(client);
+    let mut events = port.subscribe();
+    let simulator = tokio::spawn(async move {
+        let mut bytes = [0; 5];
+        modem.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(&bytes, b"AT1\r\n");
+        modem
+            .write_all(b"ERROR\r\n+CMTI: \"SM\",3\r\n")
+            .await
+            .unwrap();
+        modem.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(&bytes, b"AT2\r\n");
+        modem.write_all(b"second\r\nOK\r\n").await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+    });
+    let r = port
+        .run(Box::new(Sequence::new(
+            vec![command("AT1"), command("AT2")],
+            true,
+        )))
+        .await
+        .unwrap();
+    assert_eq!(r.len(), 2);
+    assert!(!r[0].modem_success);
+    assert!(r[1].modem_success);
+    assert!(!r[1].response.contains("+CMTI:"));
+    let mut urc = false;
+    while let Ok(e) = events.try_recv() {
+        if e.line.starts_with("+CMTI:") {
+            urc = true;
+            assert_eq!(e.correlation, "unsolicited");
+        }
+    }
+    assert!(urc);
+    simulator.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn queue_snapshot_tracks_capacity_cancellation_and_bounded_history_without_payloads() {
+    let (client, mut modem) = duplex(4096);
+    let port = Port::start(client);
+    let cloned = port.clone();
+    let first = tokio::spawn(async move {
+        cloned
+            .run_named(
+                Box::new(Sequence::new(vec![command("AT+SECRET")], false)),
+                Some("m1".into()),
+                "raw_at",
+            )
+            .await
+    });
+    let mut bytes = [0; 11];
+    modem.read_exact(&mut bytes).await.unwrap();
+    let current = port.snapshot();
+    assert_eq!(current.state, "running");
+    assert_eq!(current.current.unwrap().modem_id.as_deref(), Some("m1"));
+    let mut queued = Vec::new();
+    for _ in 0..32 {
+        let cloned = port.clone();
+        queued.push(tokio::spawn(async move {
+            cloned.execute(vec![command("AT")]).await
+        }));
+    }
+    tokio::task::yield_now().await;
+    assert_eq!(port.snapshot().waiting_count, 32);
+    assert_eq!(
+        port.execute(vec![command("AT")]).await.unwrap_err().kind,
+        ErrorKind::QueueFull
+    );
+    assert_eq!(port.snapshot().rejected_queue_full, 1);
+    queued.remove(0).abort();
+    tokio::task::yield_now().await;
+    modem.write_all(b"OK\r\n").await.unwrap();
+    first.await.unwrap().unwrap();
+    for _ in 0..31 {
+        let mut b = [0; 4];
+        modem.read_exact(&mut b).await.unwrap();
+        assert_eq!(&b, b"AT\r\n");
+        modem.write_all(b"OK\r\n").await.unwrap();
+    }
+    for request in queued {
+        request.await.unwrap().unwrap();
+    }
+    let view = port.snapshot();
+    assert_eq!(view.waiting_count, 0);
+    assert_eq!(view.state, "idle");
+    assert_eq!(view.cancelled_before_start, 1);
+    assert_eq!(view.completed, 32);
+    assert_eq!(view.recent.len(), 32);
+    let serialized = serde_json::to_string(&view).unwrap();
+    assert!(!serialized.contains("SECRET"));
+    assert!(!serialized.contains("response"));
+    drop(modem);
+    tokio::task::yield_now().await;
+    assert_eq!(port.snapshot().state, "closed");
+}
+
+#[tokio::test]
+async fn aliases_of_one_native_device_share_queue_and_monitor() {
+    use std::os::fd::AsRawFd;
+    let pty = nix::pty::openpty(None, None).unwrap();
+    let path = nix::unistd::ttyname(&pty.slave).unwrap();
+    let path = path.to_str().unwrap();
+    let alias = format!("/dev/fd/{}", pty.slave.as_raw_fd());
+    let pool = PortPool::default();
+    assert!(pool.inspect(path).await.is_none());
+    let port = pool.get(path).await.unwrap();
+    let aliased = pool.get(&alias).await.unwrap();
+    assert!(port.sender.same_channel(&aliased.sender));
+    assert_eq!(pool.ports.lock().await.len(), 1);
+    let (canonical, view) = pool.inspect(&alias).await.unwrap();
+    assert_eq!(canonical, path);
+    assert_eq!(view.state, "idle");
+}

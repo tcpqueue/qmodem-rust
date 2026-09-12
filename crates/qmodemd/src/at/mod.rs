@@ -1,6 +1,8 @@
 //! One owned worker per canonical serial device. Jobs survive caller cancellation
 //! once transmission starts, so the next caller never consumes an unfinished reply.
 mod protocol;
+mod queue;
+pub use queue::QueueView;
 #[cfg(test)]
 mod tests;
 
@@ -20,6 +22,7 @@ const RESPONSE_LIMIT: usize = 256 * 1024;
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const QUIET: Duration = Duration::from_millis(100);
 
+#[derive(Clone)]
 pub struct Step {
     pub bytes: Vec<u8>,
     pub flags: Vec<String>,
@@ -68,6 +71,7 @@ pub enum ErrorKind {
     Unsynchronized,
     QueueFull,
     Closed,
+    State,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct AtError {
@@ -95,12 +99,44 @@ pub struct SerialEvent {
 fn emit(events: &broadcast::Sender<SerialEvent>, correlation: &'static str, line: String) {
     let _ = events.send(SerialEvent { correlation, line });
 }
+/// Programs are constructed by trusted vendor code, never deserialized from HTTP.
+/// The worker owns the complete program, including retries and delays.
+pub enum Next {
+    Command(Step),
+    Wait(Duration),
+    Finish,
+}
+pub trait Program: Send {
+    fn next(&mut self, replies: &[Reply]) -> std::result::Result<Next, AtError>;
+}
+pub struct Sequence {
+    steps: std::collections::VecDeque<Step>,
+    continue_on_error: bool,
+}
+impl Sequence {
+    pub fn new(steps: Vec<Step>, continue_on_error: bool) -> Self {
+        Self {
+            steps: steps.into(),
+            continue_on_error,
+        }
+    }
+}
+impl Program for Sequence {
+    fn next(&mut self, replies: &[Reply]) -> std::result::Result<Next, AtError> {
+        if !self.continue_on_error && replies.last().is_some_and(|r| !r.modem_success) {
+            return Ok(Next::Finish);
+        }
+        Ok(self.steps.pop_front().map_or(Next::Finish, Next::Command))
+    }
+}
 struct Job {
-    steps: Vec<Step>,
+    id: u64,
+    program: Box<dyn Program>,
     reply: oneshot::Sender<std::result::Result<Vec<Reply>, AtError>>,
 }
 #[derive(Clone)]
 pub struct Port {
+    monitor: queue::Monitor,
     sender: mpsc::Sender<Job>,
     events: broadcast::Sender<SerialEvent>,
 }
@@ -111,8 +147,16 @@ impl Port {
     {
         let (sender, receiver) = mpsc::channel(32);
         let (events, _) = broadcast::channel(64);
-        tokio::spawn(worker(stream, receiver, events.clone()));
-        Self { sender, events }
+        let monitor = queue::Monitor::default();
+        tokio::spawn(worker(stream, receiver, events.clone(), monitor.clone()));
+        Self {
+            sender,
+            events,
+            monitor,
+        }
+    }
+    pub fn snapshot(&self) -> QueueView {
+        self.monitor.snapshot()
     }
     pub fn subscribe(&self) -> broadcast::Receiver<SerialEvent> {
         self.events.subscribe()
@@ -124,13 +168,20 @@ impl Port {
                 "a transaction requires 1 to 16 steps",
             ));
         }
+        self.run(Box::new(Sequence::new(steps, false))).await
+    }
+    pub async fn run(&self, program: Box<dyn Program>) -> std::result::Result<Vec<Reply>, AtError> {
+        self.run_named(program, None, "at").await
+    }
+    pub async fn run_named(
+        &self,
+        program: Box<dyn Program>,
+        modem_id: Option<String>,
+        operation: &'static str,
+    ) -> std::result::Result<Vec<Reply>, AtError> {
         let (reply, result) = oneshot::channel();
-        self.sender
-            .try_send(Job { steps, reply })
-            .map_err(|e| match e {
-                mpsc::error::TrySendError::Full(_) => err(ErrorKind::QueueFull, "AT queue is full"),
-                mpsc::error::TrySendError::Closed(_) => err(ErrorKind::Closed, "AT port is closed"),
-            })?;
+        self.monitor
+            .submit(&self.sender, program, reply, modem_id, operation)?;
         result
             .await
             .map_err(|_| err(ErrorKind::Closed, "AT port worker stopped"))?
@@ -139,8 +190,24 @@ impl Port {
 #[derive(Clone, Default)]
 pub struct PortPool {
     ports: Arc<Mutex<HashMap<PathBuf, Port>>>,
+    aliases: Arc<Mutex<HashMap<String, PathBuf>>>,
 }
 impl PortPool {
+    /// Inspect without opening a device or sending an AT command.
+    pub async fn inspect(&self, path: &str) -> Option<(String, QueueView)> {
+        let canonical = self
+            .aliases
+            .lock()
+            .await
+            .get(path)
+            .cloned()
+            .or_else(|| std::fs::canonicalize(path).ok())?;
+        self.ports
+            .lock()
+            .await
+            .get(&canonical)
+            .map(|port| (canonical.to_string_lossy().into_owned(), port.snapshot()))
+    }
     pub async fn get(&self, path: &str) -> Result<Port> {
         let canonical =
             std::fs::canonicalize(path).with_context(|| format!("open serial device {path}"))?;
@@ -148,6 +215,10 @@ impl PortPool {
             canonical.starts_with("/dev"),
             "serial device must resolve under /dev"
         );
+        self.aliases
+            .lock()
+            .await
+            .insert(path.to_owned(), canonical.clone());
         let mut ports = self.ports.lock().await;
         if let Some(port) = ports.get(&canonical) {
             return Ok(port.clone());
@@ -170,6 +241,7 @@ async fn worker<T: AsyncRead + AsyncWrite + Unpin>(
     mut stream: T,
     mut jobs: mpsc::Receiver<Job>,
     events: broadcast::Sender<SerialEvent>,
+    monitor: queue::Monitor,
 ) {
     let mut decoder = Decoder::default();
     let mut synchronized = true;
@@ -178,21 +250,48 @@ async fn worker<T: AsyncRead + AsyncWrite + Unpin>(
         tokio::select! {
             biased;
             job=jobs.recv()=>{
-                let Some(job)=job else{break;};
-                if job.reply.is_closed(){continue;}
+                let Some(mut job)=job else{break;};
+                let cancelled=job.reply.is_closed();
+                monitor.begin(job.id,cancelled);
+                if cancelled{continue;}
                 if !synchronized {
+                    monitor.finish("unsynchronized",job.reply.is_closed());
+                    monitor.phase("quarantined");
                     let _=job.reply.send(Err(err(ErrorKind::Unsynchronized,"previous transaction did not finish; restart the service after recovering the modem")));
                     continue;
                 }
                 let started=Instant::now();
                 let mut replies=Vec::new();
                 let mut failed=None;
-                for step in job.steps {
+                let mut program_error=None;
+                let mut actions=0;
+                loop {
+                    actions+=1;
+                    if actions>64 {
+                        program_error=Some(err(ErrorKind::State,"AT program exceeded action limit"));break;
+                    }
+                    let next=match job.program.next(&replies) {
+                        Ok(next)=>next,
+                        Err(e)=>{program_error=Some(e);break;}
+                    };
+                    let step=match next {
+                        Next::Finish=>break,
+                        Next::Wait(duration)=>{
+                            monitor.phase("waiting");
+                            if duration>Duration::from_secs(5) {
+                                program_error=Some(err(ErrorKind::State,"AT program delay exceeded limit"));break;
+                            }
+                            if let Err(e)=wait_idle(&mut stream,&mut decoder,duration,&events).await {
+                                failed=Some((e,None));break;
+                            }
+                            continue;
+                        },
+                        Next::Command(step)=>step,
+                    };
+                    monitor.command();
                     match exchange(&mut stream,&mut decoder,&step,&events).await {
                         Ok(reply)=>{
-                            let rejected=!reply.modem_success;
                             replies.push(reply);
-                            if rejected{break;}
                         },
                         Err(error)=>{
                             tracing::warn!(target:"qmodemd::at",kind=?error.kind,"AT transaction failed");
@@ -203,12 +302,19 @@ async fn worker<T: AsyncRead + AsyncWrite + Unpin>(
                     }
                 }
                 if let Some((error,flags))=failed {
+                    monitor.finish(match error.kind {ErrorKind::Timeout=>"timeout",ErrorKind::Overflow=>"overflow",_=>"transport_error"},job.reply.is_closed());
+                    monitor.phase("recovering");
                     let _=job.reply.send(Err(error));
                     synchronized=if let Some(flags)=flags{recover(&mut stream,&mut decoder,&flags,&events).await}else{false};
+                    monitor.phase(if synchronized{"idle"}else{"quarantined"});
                     if !synchronized {tracing::error!(target:"qmodemd::at","serial transport quarantined after unfinished transaction");}
+                }else if let Some(error)=program_error {
+                    monitor.finish("program_error",job.reply.is_closed());
+                    let _=job.reply.send(Err(error));
                 }else{
                     while let Ok(Some(line))=decoder.next(&[]) {emit(&events,"unsolicited",line);}
                     tracing::debug!(target:"qmodemd::at",elapsed_ms=started.elapsed().as_millis() as u64,steps=replies.len(),"AT transaction completed");
+                    monitor.finish(if replies.iter().all(|r|r.modem_success){"completed"}else{"completed_with_modem_error"},job.reply.is_closed());
                     let _=job.reply.send(Ok(replies));
                 }
             },
@@ -226,6 +332,7 @@ async fn worker<T: AsyncRead + AsyncWrite + Unpin>(
             }
         }
     }
+    monitor.close();
 }
 
 async fn exchange<T: AsyncRead + AsyncWrite + Unpin>(
@@ -234,7 +341,11 @@ async fn exchange<T: AsyncRead + AsyncWrite + Unpin>(
     step: &Step,
     events: &broadcast::Sender<SerialEvent>,
 ) -> std::result::Result<Reply, AtError> {
-    decoder.clear();
+    // Complete trailing URCs from the preceding command before starting another.
+    // Keep partial lines: a URC may be fragmented across this boundary.
+    while let Some(line) = decoder.next(&[])? {
+        emit(events, "unsolicited", line);
+    }
     let deadline = Instant::now() + step.timeout;
     match timeout_at(deadline, stream.write_all(&step.bytes)).await {
         Ok(Ok(())) => {}
@@ -327,6 +438,32 @@ async fn recover<T: AsyncRead + AsyncWrite + Unpin>(
                 }
             }
             _ => return false,
+        }
+    }
+}
+
+/// Keep draining URCs while holding the transaction's place in the port queue.
+async fn wait_idle<T: AsyncRead + Unpin>(
+    stream: &mut T,
+    decoder: &mut Decoder,
+    duration: Duration,
+    events: &broadcast::Sender<SerialEvent>,
+) -> std::result::Result<(), AtError> {
+    let deadline = Instant::now() + duration;
+    let mut buf = [0; 4096];
+    loop {
+        while let Some(line) = decoder.next(&[])? {
+            emit(events, "unsolicited", line);
+        }
+        match timeout_at(deadline, stream.read(&mut buf)).await {
+            Err(_) => return Ok(()),
+            Ok(Ok(n)) if n > 0 => decoder.push(&buf[..n])?,
+            _ => {
+                return Err(err(
+                    ErrorKind::Io,
+                    "serial device disconnected during transaction delay",
+                ));
+            }
         }
     }
 }

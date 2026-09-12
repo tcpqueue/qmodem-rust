@@ -6,6 +6,12 @@
 // Rust adaptation Copyright (C) 2026 tcpqueue
 //! AT compatibility is separate from transport and HTTP. Do not infer a command
 //! family from USB vendor name alone: MT5700 is tagged "huawei" in upstream data.
+pub mod bands;
+mod sim;
+mod transaction;
+pub use sim::Runtime;
+pub use transaction::{finish, local, plan};
+
 use crate::{
     at::{Reply, Step},
     config::Modem,
@@ -57,7 +63,39 @@ pub enum Operation {
         enabled: bool,
     },
     GetSimSlot,
+    GetSimCapabilities,
+    SetSimSlot {
+        slot: u8,
+    },
+    GetBandLock,
+    SetBandLock {
+        band_class: bands::Class,
+        bands: Vec<u16>,
+    },
+    SetImei {
+        imei: String,
+    },
     SoftReboot,
+}
+impl Operation {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::GetImei => "get_imei",
+            Self::SetImei { .. } => "set_imei",
+            Self::GetMode => "get_mode",
+            Self::SetMode { .. } => "set_mode",
+            Self::GetNetworkPrefer => "get_network_prefer",
+            Self::SetNetworkPrefer { .. } => "set_network_prefer",
+            Self::Get5gLan => "get_5g_lan",
+            Self::Set5gLan { .. } => "set_5g_lan",
+            Self::GetSimSlot => "get_sim_slot",
+            Self::GetSimCapabilities => "get_sim_capabilities",
+            Self::SetSimSlot { .. } => "set_sim_slot",
+            Self::GetBandLock => "get_band_lock",
+            Self::SetBandLock { .. } => "set_band_lock",
+            Self::SoftReboot => "soft_reboot",
+        }
+    }
 }
 fn selected(networks: &[String], network: &str) -> bool {
     networks.iter().any(|n| n == network)
@@ -185,6 +223,7 @@ pub fn prepare(device: &Modem, operation: &Operation) -> Result<Step> {
             );
             "AT+QUIMSLOT?".into()
         }
+        _ => bail!("operation requires a vendor transaction"),
     };
     Step::command(&command, Duration::from_secs(10))
 }
@@ -296,21 +335,9 @@ pub fn interpret(device: &Modem, operation: &Operation, reply: &Reply) -> Result
             json!({"network_prefer":{"3G":if g3{"1"}else{"0"},"4G":if g4{"1"}else{"0"},"5G":if g5{"1"}else{"0"}}})
         }
         Operation::GetSimSlot => {
-            let value = raw
-                .lines()
-                .find_map(|l| {
-                    l.strip_prefix("+QUIMSLOT:")
-                        .or_else(|| l.strip_prefix("+QUSIMSLOT:"))
-                })
-                .ok_or_else(|| anyhow::anyhow!("missing SIM slot response"))?;
-            let slot = value
-                .trim()
-                .trim_matches('"')
-                .split(',')
-                .next()
-                .unwrap_or("")
-                .trim();
-            json!({"sim_slot":slot})
+            let slot = sim::parse_slot(raw)
+                .ok_or_else(|| anyhow::anyhow!("missing valid SIM slot response"))?;
+            json!({"sim_slot":slot,"source":"modem","hardware_verified":true})
         }
         Operation::Get5gLan => {
             let value = raw
@@ -421,3 +448,6 @@ mod tests {
         assert!(interpret(&device("quectel", "qualcomm"), &Operation::GetMode, &r).is_err());
     }
 }
+
+#[cfg(test)]
+mod migration_tests;
