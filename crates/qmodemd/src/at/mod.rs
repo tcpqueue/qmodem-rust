@@ -387,6 +387,12 @@ async fn exchange<T: AsyncRead + AsyncWrite + Unpin>(
     let mut read_buffer = [0; 4096];
     loop {
         while let Some(line) = decoder.next(&step.flags)? {
+            if end_match(&line, &step.flags).is_none()
+                && protocol::is_unsolicited(&line, &step.bytes)
+            {
+                emit(events, "unsolicited", line);
+                continue;
+            }
             if response.len() + line.len() + 2 > RESPONSE_LIMIT {
                 return Err(err(ErrorKind::Overflow, "AT response exceeded limit"));
             }

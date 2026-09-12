@@ -30,9 +30,12 @@
 
 ## 已完成验证
 
-87 项 Rust 测试通过；严格 clippy、前端构建、TOML/HTTP/SQLite/SIGTERM 与四组服务测试通过。
+89 项 Rust 测试通过；严格 clippy、前端构建、TOML/HTTP/SQLite/SIGTERM 与四组服务测试通过。
 ARM64、x86_64、i686 musl 静态链接检查通过；x86_64 和 i686 可在 WSL 执行版本命令。
 浏览器验证初始化、维护、转发配置保存及模拟 AT 返回；预览仅连接明确标注的 PTY 模组。
 
 2026-09-12 经用户临时授权，对 COM34 的 MT5700M-CN V200R001C20B024 执行六条只读查询；
 均返回 OK，端口已释放。未执行实机短信读写、拨号、切卡、锁频或重启。
+
+2026-09-12 在 GL-MT3600BE / ImmortalWrt 25.12-SNAPSHOT 上完成 ARM64 原生串口查询、
+HTTP/SQLite/sysfs 清单和 SIGTERM 验证。修复 MT5700 主动上报混入命令回复，见 mt5700-openwrt-test.md。

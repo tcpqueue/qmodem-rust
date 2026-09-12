@@ -32,6 +32,8 @@
 
 返回的 `replies` 每项包含 `status`、`terminal`、`modem_success`、`response`。保持上游 transport 语义：收到 `ERROR` 等终止行时 `status=0`，但 `modem_success=false`，不会把模组拒绝误报为成功。
 
+已知单行主动上报通过 SSE 的 unsolicited 事件返回，不混入无关命令的 response。查询相同前缀时保留响应；未知厂商行也保留。同前缀的查询回复与主动上报可能存在协议歧义。
+
 原始 AT 数据只向已认证调用者返回，不写入日志。AT 调试可执行写命令；如用于日常状态查询，应优先调用结构化接口。
 
 ## 结构化操作

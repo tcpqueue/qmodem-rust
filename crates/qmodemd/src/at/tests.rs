@@ -395,3 +395,71 @@ async fn pool_reopens_after_close_without_reusing_old_handles() {
     pool.close(path).await.unwrap();
     drop(pty.master);
 }
+
+#[tokio::test]
+async fn mt5700_notifications_are_separate_from_fragmented_command_response() {
+    let (client, mut modem) = duplex(4096);
+    let port = Port::start(client);
+    let mut events = port.subscribe();
+    let simulator = tokio::spawn(async move {
+        let mut cmd = [0; 9];
+        modem.read_exact(&mut cmd).await.unwrap();
+        assert_eq!(&cmd, b"AT+CGMM\r\n");
+        modem.write_all(b"^RSSI: 32\r\n^CER").await.unwrap();
+        sleep(Duration::from_millis(5)).await;
+        modem
+            .write_all(b"SSI: 0,0,255\r\nMT5700M-CN\r\n+CMTI: \"SM\",7\r\n+C5GREG: 1\r\nOK\r\n")
+            .await
+            .unwrap();
+        sleep(Duration::from_millis(10)).await;
+    });
+    let reply = port.execute(vec![command("AT+CGMM")]).await.unwrap();
+    assert_eq!(reply[0].response, "MT5700M-CN\r\nOK\r\n");
+    let mut unsolicited = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if event.correlation == "unsolicited" {
+            unsolicited.push(event.line);
+        }
+    }
+    assert_eq!(
+        unsolicited,
+        [
+            "^RSSI: 32",
+            "^CERSSI: 0,0,255",
+            "+CMTI: \"SM\",7",
+            "+C5GREG: 1"
+        ]
+    );
+    simulator.await.unwrap();
+}
+
+#[tokio::test]
+async fn solicited_notification_queries_and_unknown_lines_are_preserved() {
+    let (client, mut modem) = duplex(4096);
+    let port = Port::start(client);
+    let simulator = tokio::spawn(async move {
+        for (request, response) in [
+            ("at^hcsq?\r\n", "^HCSQ: \"NR\",70,171,30\r\nOK\r\n"),
+            ("AT+CEREG?\r\n", "+CEREG: 2,1\r\nOK\r\n"),
+            ("AT+CPIN?\r\n", "+CPIN: READY\r\n^UNKNOWN: 7\r\nOK\r\n"),
+        ] {
+            let mut cmd = vec![0; request.len()];
+            modem.read_exact(&mut cmd).await.unwrap();
+            assert_eq!(cmd, request.as_bytes());
+            modem.write_all(response.as_bytes()).await.unwrap();
+        }
+    });
+    let replies = port
+        .execute(vec![
+            command("at^hcsq?"),
+            command("AT+CEREG?"),
+            command("AT+CPIN?"),
+        ])
+        .await
+        .unwrap();
+    assert!(replies[0].response.starts_with("^HCSQ:"));
+    assert!(replies[1].response.starts_with("+CEREG:"));
+    assert!(replies[2].response.starts_with("+CPIN:"));
+    assert!(replies[2].response.contains("^UNKNOWN: 7"));
+    simulator.await.unwrap();
+}

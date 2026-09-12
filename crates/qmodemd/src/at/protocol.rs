@@ -20,6 +20,43 @@ pub fn end_match<'a>(line: &str, flags: &'a [String]) -> Option<&'a str> {
         })
         .map(String::as_str)
 }
+/// Only classify known single-line notifications. A query for the same command
+/// keeps its payload, and unknown vendor lines remain available to callers.
+/// Shared-prefix query replies and URCs cannot always be distinguished on wire.
+pub fn is_unsolicited(line: &str, command: &[u8]) -> bool {
+    let line = line.trim();
+    let Some((prefix, _)) = line.split_once(':') else {
+        return matches!(line, "RDY" | "APP RDY" | "SMS DONE" | "PB DONE");
+    };
+    if !matches!(
+        prefix,
+        "^RSSI"
+            | "^CERSSI"
+            | "^HCSQ"
+            | "^MODE"
+            | "^SIMST"
+            | "^SRVST"
+            | "^DSFLOWRPT"
+            | "^NDISSTAT"
+            | "+CREG"
+            | "+CGREG"
+            | "+CEREG"
+            | "+C5GREG"
+            | "+CMTI"
+            | "+CDSI"
+            | "+QIURC"
+            | "+QIND"
+            | "+CPIN"
+    ) {
+        return false;
+    }
+    let command = String::from_utf8_lossy(command);
+    let command = command.trim().to_ascii_uppercase();
+    let token = command.strip_prefix("AT").unwrap_or("");
+    let token = token.split(['?', '=', ';', ' ', '\t']).next().unwrap_or("");
+    token != prefix
+}
+
 #[derive(Default)]
 pub struct Decoder {
     pending: Vec<u8>,
