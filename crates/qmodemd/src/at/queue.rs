@@ -54,6 +54,7 @@ pub struct QueueView {
     pub rejected_queue_full: u64,
 }
 struct Data {
+    accepting: bool,
     next_id: u64,
     state: &'static str,
     current: Option<Entry>,
@@ -69,6 +70,7 @@ pub(super) struct Monitor(Arc<StdMutex<Data>>);
 impl Default for Monitor {
     fn default() -> Self {
         Self(Arc::new(StdMutex::new(Data {
+            accepting: true,
             next_id: 1,
             state: "idle",
             current: None,
@@ -96,6 +98,9 @@ impl Monitor {
         operation: &'static str,
     ) -> std::result::Result<(), AtError> {
         let mut d = self.lock();
+        if !d.accepting {
+            return Err(err(ErrorKind::Closed, "AT port is closed"));
+        }
         let id = d.next_id;
         d.next_id = d.next_id.wrapping_add(1);
         // Hold metadata lock until try_send completes so dequeue cannot overtake registration.
@@ -169,9 +174,19 @@ impl Monitor {
         }
         d.state = "idle";
     }
+    pub fn freeze(&self) -> Result<()> {
+        let mut d = self.lock();
+        ensure!(
+            d.current.is_none() && d.waiting.is_empty() && d.state != "recovering",
+            "port is busy; wait for all transactions and recovery to finish"
+        );
+        d.accepting = false;
+        Ok(())
+    }
     pub fn close(&self) {
         let mut d = self.lock();
         d.state = "closed";
+        d.accepting = false;
         while let Some(entry) = d.waiting.pop_front() {
             let mut view = entry.view();
             view.outcome = Some("port_closed");

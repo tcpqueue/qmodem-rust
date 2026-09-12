@@ -11,7 +11,7 @@ pub fn initialize(path: &Path) -> Result<Connection> {
     db.pragma_update(None, "journal_mode", "WAL")?;
     db.pragma_update(None, "foreign_keys", "ON")?;
     let version: u32 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    ensure!(version <= 1, "database was created by a newer version");
+    ensure!(version <= 2, "database was created by a newer version");
     if version == 0 {
         let tx = db.transaction()?;
         tx.execute_batch(
@@ -37,6 +37,16 @@ pub fn initialize(path: &Path) -> Result<Connection> {
             );
             PRAGMA user_version = 1;",
         )?;
+        tx.commit()?;
+    }
+    if version <= 1 {
+        let tx = db.transaction()?;
+        tx.execute_batch("ALTER TABLE messages ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+            ALTER TABLE messages ADD COLUMN request_id TEXT;
+            CREATE UNIQUE INDEX messages_request ON messages(modem_id,request_id) WHERE request_id IS NOT NULL;
+            CREATE TABLE sms_segments (id INTEGER PRIMARY KEY,modem_id TEXT NOT NULL,message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,reference INTEGER,total INTEGER NOT NULL,part INTEGER NOT NULL,pdu TEXT NOT NULL,content TEXT NOT NULL,sim_index INTEGER,UNIQUE(modem_id,pdu),UNIQUE(message_id,part));
+            CREATE INDEX sms_segments_group ON sms_segments(modem_id,reference,total);
+            PRAGMA user_version=2;")?;
         tx.commit()?;
     }
     Ok(db)
@@ -69,7 +79,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("q.sqlite3");
         let db = Connection::open(&path).unwrap();
-        db.pragma_update(None, "user_version", 2).unwrap();
+        db.pragma_update(None, "user_version", 3).unwrap();
         drop(db);
         assert!(initialize(&path).is_err());
     }

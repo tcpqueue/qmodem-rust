@@ -139,6 +139,7 @@ pub struct Port {
     monitor: queue::Monitor,
     sender: mpsc::Sender<Job>,
     events: broadcast::Sender<SerialEvent>,
+    worker: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 impl Port {
     fn start<T>(stream: T) -> Self
@@ -148,12 +149,23 @@ impl Port {
         let (sender, receiver) = mpsc::channel(32);
         let (events, _) = broadcast::channel(64);
         let monitor = queue::Monitor::default();
-        tokio::spawn(worker(stream, receiver, events.clone(), monitor.clone()));
+        let task = tokio::spawn(worker(stream, receiver, events.clone(), monitor.clone()));
         Self {
             sender,
             events,
             monitor,
+            worker: Arc::new(Mutex::new(Some(task))),
         }
+    }
+    pub async fn close(&self) -> Result<()> {
+        self.monitor.freeze()?;
+        if let Some(task) = self.worker.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
+        self.monitor.close();
+        emit(&self.events, "closed", String::new());
+        Ok(())
     }
     pub fn snapshot(&self) -> QueueView {
         self.monitor.snapshot()
@@ -208,6 +220,21 @@ impl PortPool {
             .get(&canonical)
             .map(|port| (canonical.to_string_lossy().into_owned(), port.snapshot()))
     }
+    /// Close only when no transaction or recovery is active. Old handles reject new jobs.
+    pub async fn close(&self, path: &str) -> Result<()> {
+        let canonical = self
+            .aliases
+            .lock()
+            .await
+            .get(path)
+            .cloned()
+            .or_else(|| std::fs::canonicalize(path).ok());
+        let ports = self.ports.lock().await;
+        if let Some(port) = canonical.and_then(|key| ports.get(&key)) {
+            port.close().await?;
+        }
+        Ok(())
+    }
     pub async fn get(&self, path: &str) -> Result<Port> {
         let canonical =
             std::fs::canonicalize(path).with_context(|| format!("open serial device {path}"))?;
@@ -221,7 +248,10 @@ impl PortPool {
             .insert(path.to_owned(), canonical.clone());
         let mut ports = self.ports.lock().await;
         if let Some(port) = ports.get(&canonical) {
-            return Ok(port.clone());
+            if port.snapshot().state != "closed" {
+                return Ok(port.clone());
+            }
+            port.close().await?;
         }
         let path_text = canonical.to_str().context("serial path is not UTF-8")?;
         let mut stream = tokio_serial::new(path_text, 115200)
@@ -257,7 +287,7 @@ async fn worker<T: AsyncRead + AsyncWrite + Unpin>(
                 if !synchronized {
                     monitor.finish("unsynchronized",job.reply.is_closed());
                     monitor.phase("quarantined");
-                    let _=job.reply.send(Err(err(ErrorKind::Unsynchronized,"previous transaction did not finish; restart the service after recovering the modem")));
+                    let _=job.reply.send(Err(err(ErrorKind::Unsynchronized,"previous transaction did not finish; close the idle port after recovering the modem")));
                     continue;
                 }
                 let started=Instant::now();
@@ -267,7 +297,7 @@ async fn worker<T: AsyncRead + AsyncWrite + Unpin>(
                 let mut actions=0;
                 loop {
                     actions+=1;
-                    if actions>64 {
+                    if actions>128 {
                         program_error=Some(err(ErrorKind::State,"AT program exceeded action limit"));break;
                     }
                     let next=match job.program.next(&replies) {
@@ -333,6 +363,7 @@ async fn worker<T: AsyncRead + AsyncWrite + Unpin>(
         }
     }
     monitor.close();
+    emit(&events, "closed", String::new());
 }
 
 async fn exchange<T: AsyncRead + AsyncWrite + Unpin>(

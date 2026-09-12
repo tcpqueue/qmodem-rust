@@ -356,10 +356,9 @@ p {
 }
 .port-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.6fr) minmax(125px, 1fr) minmax(
-      100px,
-      0.8fr
-    ) minmax(110px, 1fr) auto;
+  grid-template-columns:
+    minmax(180px, 1.6fr) minmax(125px, 1fr) minmax(100px, 0.8fr)
+    minmax(110px, 1fr) auto;
   gap: 20px;
   align-items: center;
   padding: 19px 0;
@@ -593,10 +592,9 @@ code {
   }
   .port-row {
     gap: 12px;
-    grid-template-columns: minmax(170px, 1.4fr) 110px 80px minmax(
-        85px,
-        1fr
-      ) auto;
+    grid-template-columns:
+      minmax(170px, 1.4fr) 110px 80px minmax(85px, 1fr)
+      auto;
   }
   .tools {
     width: 100%;
@@ -699,5 +697,68 @@ code {
   }
   .el-dialog {
     padding: 18px;
+  }
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 14px 18px;
+  cursor: pointer;
+  border-radius: 10px;
+  text-align: left;
+  font: inherit;
+  margin: 5px 0;
+}
+.nav-item svg {
+  width: 18px;
+  height: 18px;
+}
+.nav-item span {
+  flex: 1;
+}
+.nav-item.nav-active {
+  background: #edf2ff;
+  color: #5574ee;
+}
+
+@media (max-width: 760px) {
+  .shell {
+    flex-direction: column;
+  }
+  .sidebar {
+    display: flex;
+    position: static;
+    inset: auto;
+    width: 100%;
+    padding: 8px 12px;
+    flex-direction: row;
+    gap: 6px;
+    border-bottom: 1px solid var(--line);
+  }
+  .sidebar .brand,
+  .sidebar .nav-caption,
+  .sidebar .sidebar-footer {
+    display: none;
+  }
+  .nav-item {
+    padding: 10px 8px;
+    gap: 6px;
+    font-size: 13px;
+    justify-content: center;
+  }
+  .nav-item span {
+    flex: initial;
+  }
+  .nav-item svg:last-child {
+    display: none;
+  }
+  .workspace {
+    width: 100%;
   }
 }

@@ -45,3 +45,29 @@ runtime_dir = "/tmp/qmodem-rust"
 # lte = [1, 3, 5, 8, 28, 38, 40, 41, 71]
 # nr_nsa = [41, 78, 79]
 # nr = [41, 78, 79]
+
+# Native device discovery. Only Quectel and TD Tech MT5700 are registered.
+[discovery]
+enabled = true
+interval_seconds = 15
+auto_register = true
+bind_option_driver = true
+
+# Per-modem optional sections:
+# [modems.network]
+# auto_connect = false
+# driver = "at"                 # at, qmi, mbim
+# control_port = "/dev/cdc-wdm0" # qmi/mbim
+# pdp_type = "ipv4v6"
+# metric = 50
+# modem_nat = true
+# [modems.network.credentials]
+# apn = "internet"
+# username = ""
+# password = ""
+# auth = ""
+# pin = ""
+# [modems.sms]
+# mode = "manual"              # manual, poll, urc, sim_only
+# poll_interval_seconds = 30
+# memories = ["SM", "SM", "SM"]

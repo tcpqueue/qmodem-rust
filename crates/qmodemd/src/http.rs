@@ -1,3 +1,4 @@
+mod sms_api;
 use crate::{
     at::{AtError, ErrorKind, PortPool, Step},
     auth,
@@ -26,9 +27,23 @@ use std::{
 };
 
 struct AppState {
-    config: Config,
+    config: std::sync::RwLock<Config>,
+    config_path: Option<std::path::PathBuf>,
+    config_writer: tokio::sync::Mutex<()>,
+    discovery_writer: tokio::sync::Mutex<()>,
     ports: PortPool,
+    status: crate::status::Cache,
+    network: Arc<crate::network::Manager>,
+    sms_status: Arc<tokio::sync::Mutex<std::collections::HashMap<String, Value>>>,
     runtime: vendor::Runtime,
+}
+impl AppState {
+    fn config(&self) -> Config {
+        self.config
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 type Shared = Arc<AppState>;
 static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -95,7 +110,7 @@ async fn health() -> Json<Value> {
     )
 }
 async fn service(State(state): State<Shared>) -> Json<Value> {
-    success(service_info(&state.config))
+    success(service_info(&state.config()))
 }
 async fn devices() -> Result<Json<Value>, ApiError> {
     listener::interfaces()
@@ -109,15 +124,13 @@ async fn devices() -> Result<Json<Value>, ApiError> {
             )
         })
 }
-fn configured_modem<'a>(
-    state: &'a AppState,
-    id: &str,
-) -> Result<&'a crate::config::Modem, ApiError> {
+fn configured_modem(state: &AppState, id: &str) -> Result<crate::config::Modem, ApiError> {
     let modem = state
-        .config
+        .config()
         .modems
         .iter()
         .find(|m| m.id == id)
+        .cloned()
         .ok_or_else(|| {
             ApiError::new(
                 StatusCode::NOT_FOUND,
@@ -136,7 +149,7 @@ fn configured_modem<'a>(
 }
 async fn modems(State(state): State<Shared>) -> Json<Value> {
     success(
-        json!({"items":state.config.modems.iter().map(|m|json!({"id":m.id,"name":m.name,"manufacturer":m.manufacturer,"model":m.model,"platform":m.platform,"bus":m.bus,"enabled":m.enabled})).collect::<Vec<_>>() }),
+        json!({"items":state.config().modems.iter().map(|m|json!({"id":m.id,"name":m.name,"manufacturer":m.manufacturer,"model":m.model,"platform":m.platform,"bus":m.bus,"enabled":m.enabled})).collect::<Vec<_>>() }),
     )
 }
 async fn capabilities(
@@ -155,9 +168,20 @@ async fn capabilities(
         "get_network_prefer",
         "set_network_prefer",
         "soft_reboot",
+        "get_usage_stats",
     ];
     if modem.manufacturer.eq_ignore_ascii_case("quectel") {
-        operations.extend(["get_5g_lan", "set_5g_lan", "get_band_lock", "set_band_lock"]);
+        operations.extend([
+            "get_5g_lan",
+            "set_5g_lan",
+            "get_band_lock",
+            "set_band_lock",
+            "write_usage_stats",
+            "clear_usage_stats",
+        ]);
+        if ["qualcomm", "lte12", "lte", "unisoc"].contains(&modem.platform.as_str()) {
+            operations.extend(["get_neighborcell", "set_cell_lock", "unlock_cell"]);
+        }
     }
     Ok(success(
         json!({"operations":operations,"coverage":"partial","hardware_verified":false}),
@@ -204,8 +228,11 @@ async fn action(
     input: Result<Json<vendor::Operation>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let operation = body(input)?;
+    if matches!(operation, vendor::Operation::SetSimSlot { .. }) {
+        return switch_sim_workflow(state, id, operation).await;
+    }
     let modem = configured_modem(&state, &id)?;
-    if let Some(data) = vendor::local(modem, &operation, &state.runtime).map_err(|_| {
+    if let Some(data) = vendor::local(&modem, &operation, &state.runtime).map_err(|_| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "runtime_state_failed",
@@ -214,7 +241,7 @@ async fn action(
     })? {
         return Ok(success(data));
     }
-    let program = vendor::plan(modem, &operation, &state.runtime)
+    let program = vendor::plan(&modem, &operation, &state.runtime)
         .map_err(|e| ApiError::invalid(e.to_string()))?;
     let port = state.ports.get(&modem.at_port).await.map_err(|_| {
         ApiError::new(
@@ -223,10 +250,11 @@ async fn action(
             "Could not open the configured AT port",
         )
     })?;
+    state.status.invalidate().await;
     let replies = port
         .run_named(program, Some(modem.id.clone()), operation.name())
         .await?;
-    let mut data = vendor::finish(modem, &operation, &replies).map_err(|e| {
+    let mut data = vendor::finish(&modem, &operation, &replies).map_err(|e| {
         ApiError::new(
             StatusCode::BAD_GATEWAY,
             "invalid_modem_response",
@@ -272,6 +300,7 @@ async fn events(
     })?;
     let stream = futures_util::stream::unfold(port.subscribe(), |mut receiver| async move {
         let event = match receiver.recv().await {
+            Ok(event) if event.correlation == "closed" => return None,
             Ok(event) => Event::default()
                 .event("serial")
                 .json_data(event)
@@ -288,7 +317,7 @@ async fn events(
 }
 async fn queues(State(state): State<Shared>) -> Json<Value> {
     let mut modems = Vec::new();
-    for modem in &state.config.modems {
+    for modem in &state.config().modems {
         let mut paths = vec![(&modem.at_port, vec!["at"])];
         if let Some(sms) = &modem.sms_at_port {
             if sms == &modem.at_port {
@@ -321,7 +350,7 @@ async fn authenticate(State(state): State<Shared>, req: Request, next: Next) -> 
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "));
-    if !token.is_some_and(|s| auth::authorized(&state.config.auth.token_hash, s)) {
+    if !token.is_some_and(|s| auth::authorized(&state.config().auth.token_hash, s)) {
         let mut response = ApiError::new(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -374,17 +403,45 @@ async fn method_not_allowed() -> ApiError {
         "HTTP method not allowed",
     )
 }
+#[cfg(test)]
 pub fn router(cfg: Config) -> Router {
+    router_with_path(cfg, None)
+}
+pub fn router_with_path(cfg: Config, path: Option<std::path::PathBuf>) -> Router {
     let state = Arc::new(AppState {
         runtime: vendor::Runtime::new(&cfg.storage.runtime_dir),
-        config: cfg,
+        config: std::sync::RwLock::new(cfg),
+        config_path: path,
+        config_writer: tokio::sync::Mutex::new(()),
+        discovery_writer: tokio::sync::Mutex::new(()),
         ports: PortPool::default(),
+        status: crate::status::Cache::default(),
+        network: Default::default(),
+        sms_status: Default::default(),
     });
+    if state.config_path.is_some() && state.config().discovery.enabled {
+        start_discovery(Arc::downgrade(&state));
+    }
+    if state.config_path.is_some() {
+        start_network_workers(Arc::downgrade(&state));
+        start_sms_workers(Arc::downgrade(&state));
+    }
     let api = Router::new()
+        .merge(sms_api::routes())
         .route("/api/v1/system/service", get(service))
         .route("/api/v1/system/interfaces", get(devices))
         .route("/api/v1/modems", get(modems))
+        .route(
+            "/api/v1/modems/{id}/config",
+            get(modem_settings).put(save_modem).delete(delete_modem),
+        )
+        .route("/api/v1/modems/{id}/ports/close", post(close_port))
+        .route("/api/v1/discovery", get(discover))
+        .route("/api/v1/discovery/{id}/probe", post(probe_device))
+        .route("/api/v1/discovery/{id}/bind", post(bind_device))
         .route("/api/v1/modems/{id}/capabilities", get(capabilities))
+        .route("/api/v1/modems/{id}/status", get(modem_status))
+        .route("/api/v1/modems/{id}/network", post(network_operation))
         .route("/api/v1/modems/{id}/at", post(send_at))
         .route("/api/v1/modems/{id}/actions", post(action))
         .route("/api/v1/modems/{id}/events", get(events))
@@ -663,4 +720,668 @@ mod queue_api_tests {
             assert_eq!(body["data"]["data"]["hardware_verified"], false);
         }
     }
+}
+
+async fn modem_settings(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let modem = state
+        .config()
+        .modems
+        .into_iter()
+        .find(|m| m.id == id)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "modem_not_found",
+                "Configured modem not found",
+            )
+        })?;
+    Ok(success(json!(modem)))
+}
+async fn persist_modem(
+    state: &Shared,
+    id: String,
+    modem: Option<crate::config::Modem>,
+) -> Result<(), ApiError> {
+    let _writer = state.config_writer.lock().await;
+    let mut config = state.config();
+    config.modems.retain(|m| m.id != id);
+    if let Some(modem) = &modem {
+        config.modems.push(modem.clone());
+    }
+    config
+        .validate()
+        .map_err(|e| ApiError::invalid(e.to_string()))?;
+    if let Some(path) = state.config_path.clone() {
+        let modems =
+            tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<crate::config::Modem>> {
+                crate::config::update(&path, |document| {
+                    let mut disk = Config::parse(&document.to_string())?;
+                    disk.modems.retain(|m| m.id != id);
+                    if let Some(modem) = modem {
+                        disk.modems.push(modem);
+                    }
+                    disk.validate()?;
+                    let encoded = toml::to_string(&disk)?.parse::<toml_edit::DocumentMut>()?;
+                    document["modems"] = encoded["modems"].clone();
+                    Ok(())
+                })?;
+                Ok(Config::load(&path)?.modems)
+            })
+            .await
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "config_write_failed",
+                    "Configuration worker stopped",
+                )
+            })?
+            .map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "config_write_failed",
+                    e.to_string(),
+                )
+            })?;
+        config.modems = modems;
+    }
+    state
+        .config
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .modems = config.modems;
+    Ok(())
+}
+async fn save_modem(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    input: Result<Json<crate::config::Modem>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let mut modem = body(input)?;
+    if modem.sms_at_port.as_deref() == Some("") {
+        modem.sms_at_port = None;
+    }
+    if modem.interface.as_deref() == Some("") {
+        modem.interface = None;
+    }
+    if modem.id != id {
+        return Err(ApiError::invalid("URL id must match modem id"));
+    }
+    persist_modem(&state, id, Some(modem)).await?;
+    Ok(success(json!({"saved":true,"restart_required":false})))
+}
+async fn delete_modem(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    persist_modem(&state, id, None).await?;
+    Ok(success(json!({"deleted":true})))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClosePort {
+    role: String,
+}
+async fn close_port(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    input: Result<Json<ClosePort>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let role = body(input)?.role;
+    let modem = configured_modem(&state, &id)?;
+    let path = match role.as_str() {
+        "at" => &modem.at_port,
+        "sms" => modem.sms_at_port.as_ref().unwrap_or(&modem.at_port),
+        _ => return Err(ApiError::invalid("role must be at or sms")),
+    };
+    state
+        .ports
+        .close(path)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::CONFLICT, "port_busy", e.to_string()))?;
+    Ok(success(
+        json!({"closed":true,"reopens_on_next_request":true}),
+    ))
+}
+async fn inventory() -> Result<Vec<crate::discovery::Device>, ApiError> {
+    tokio::task::spawn_blocking(|| crate::discovery::scan(std::path::Path::new("/sys")))
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "discovery_failed",
+                "Scanner stopped",
+            )
+        })?
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "discovery_failed",
+                e.to_string(),
+            )
+        })
+}
+async fn discover() -> Result<Json<Value>, ApiError> {
+    Ok(success(json!({"items":inventory().await?,"probed":false})))
+}
+async fn probe_device(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let _guard = state.discovery_writer.try_lock().map_err(|_| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "discovery_busy",
+            "Device discovery is already running",
+        )
+    })?;
+    let device = inventory()
+        .await?
+        .into_iter()
+        .find(|d| d.id == id)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "device_not_found",
+                "Device disappeared or is outside the supported scope",
+            )
+        })?;
+    Ok(success(json!(
+        crate::discovery::probe(device, &state.ports).await
+    )))
+}
+async fn bind_device(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let _guard = state.discovery_writer.try_lock().map_err(|_| {
+        ApiError::new(
+            StatusCode::CONFLICT,
+            "discovery_busy",
+            "Device discovery is already running",
+        )
+    })?;
+    let device = inventory()
+        .await?
+        .into_iter()
+        .find(|d| d.id == id)
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "device_not_found",
+                "Device disappeared",
+            )
+        })?;
+    tokio::task::spawn_blocking(move || {
+        crate::discovery::bind_option(&device, std::path::Path::new("/sys"))
+    })
+    .await
+    .map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "driver_bind_failed",
+            "Driver worker stopped",
+        )
+    })?
+    .map_err(|e| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "driver_bind_failed",
+            e.to_string(),
+        )
+    })?;
+    Ok(success(json!({"bound":true,"rescan_required":true})))
+}
+
+async fn modem_status(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let modem = configured_modem(&state, &id)?;
+    state
+        .status
+        .get(&modem, &state.ports)
+        .await
+        .map(success)
+        .map_err(|e| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "status_unavailable",
+                e.to_string(),
+            )
+        })
+}
+
+#[cfg(test)]
+mod modem_config_tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+    #[tokio::test]
+    async fn config_crud_updates_live_state_preserves_auth_and_validates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut cfg = Config::parse(include_str!("../../../config/qmodem.example.toml")).unwrap();
+        cfg.auth.token_hash = auth::digest("test-token");
+        std::fs::write(&path, toml::to_string(&cfg).unwrap()).unwrap();
+        let app = router_with_path(cfg, Some(path.clone()));
+        let modem = json!({"id":"m1","name":"test","manufacturer":"quectel","platform":"qualcomm","bus":"usb","at_port":"/dev/no-modem"});
+        let request = |method: &str, uri: &str, data: Value| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header(header::AUTHORIZATION, "Bearer test-token")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(data.to_string()))
+                .unwrap()
+        };
+        let saved = app
+            .clone()
+            .oneshot(request("PUT", "/api/v1/modems/m1/config", modem.clone()))
+            .await
+            .unwrap();
+        assert_eq!(saved.status(), 200);
+        assert_eq!(Config::load(&path).unwrap().modems.len(), 1);
+        let read = app
+            .clone()
+            .oneshot(request("GET", "/api/v1/modems/m1/config", json!(null)))
+            .await
+            .unwrap();
+        assert_eq!(read.status(), 200);
+        let mut invalid = modem;
+        invalid["manufacturer"] = json!("fibocom");
+        assert_eq!(
+            app.clone()
+                .oneshot(request("PUT", "/api/v1/modems/m1/config", invalid))
+                .await
+                .unwrap()
+                .status(),
+            422
+        );
+        assert_eq!(
+            Config::load(&path).unwrap().modems[0].manufacturer,
+            "quectel"
+        );
+        assert_eq!(
+            app.oneshot(request("DELETE", "/api/v1/modems/m1/config", json!(null)))
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+        let cfg = Config::load(&path).unwrap();
+        assert!(cfg.modems.is_empty());
+        assert_eq!(cfg.auth.token_hash, auth::digest("test-token"));
+    }
+}
+
+fn start_discovery(weak: std::sync::Weak<AppState>) {
+    tokio::spawn(async move {
+        let mut seen = std::collections::HashMap::<String, String>::new();
+        loop {
+            let Some(state) = weak.upgrade() else {
+                break;
+            };
+            let settings = state.config().discovery;
+            if !settings.enabled {
+                break;
+            }
+            if let Ok(_guard) = state.discovery_writer.try_lock() {
+                match inventory().await {
+                    Ok(devices) => {
+                        seen.retain(|id, _| devices.iter().any(|d| &d.id == id));
+                        for device in devices {
+                            let signature = format!(
+                                "{}:{}:{:?}:{:?}",
+                                device.vendor_id,
+                                device.product_id,
+                                device.serial,
+                                device.at_candidates
+                            );
+                            if seen.get(&device.id) == Some(&signature) {
+                                continue;
+                            }
+                            seen.insert(device.id.clone(), signature);
+                            let existing = state
+                                .config()
+                                .modems
+                                .into_iter()
+                                .find(|m| m.id == device.id);
+                            if existing.as_ref().is_some_and(|m| !m.enabled) {
+                                continue;
+                            }
+                            if settings.bind_option_driver
+                                && device.needs_option_binding
+                                && device.at_candidates.is_empty()
+                            {
+                                let device = device.clone();
+                                let result = tokio::task::spawn_blocking(move || {
+                                    crate::discovery::bind_option(
+                                        &device,
+                                        std::path::Path::new("/sys"),
+                                    )
+                                })
+                                .await;
+                                if !matches!(result, Ok(Ok(()))) {
+                                    tracing::warn!("automatic option driver binding failed");
+                                }
+                                continue;
+                            }
+                            if !settings.auto_register || device.at_candidates.is_empty() {
+                                continue;
+                            }
+                            if existing
+                                .as_ref()
+                                .is_some_and(|m| std::path::Path::new(&m.at_port).exists())
+                            {
+                                continue;
+                            }
+                            let identified = crate::discovery::probe(device, &state.ports).await;
+                            if let Some(mut modem) = identified.modem {
+                                if let Some(old) = existing {
+                                    if old.manufacturer != modem.manufacturer
+                                        || old.model != modem.model
+                                    {
+                                        tracing::warn!(modem_id=%old.id,"replacement modem has different identity; keeping existing configuration");
+                                        continue;
+                                    }
+                                    modem.name = old.name;
+                                    modem.apn = old.apn;
+                                    modem.pdp_index = old.pdp_index;
+                                    modem.bands = old.bands;
+                                    modem.sms = old.sms;
+                                    modem.network = old.network;
+                                }
+                                let id = modem.id.clone();
+                                match persist_modem(&state, id.clone(), Some(modem)).await {
+                                    Ok(()) => {
+                                        tracing::info!(modem_id=%id,"discovered modem configuration saved")
+                                    }
+                                    Err(_) => {
+                                        seen.remove(&id);
+                                        tracing::error!(modem_id=%id,"could not save discovered modem");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => tracing::warn!("device inventory unavailable"),
+                }
+            }
+            drop(state);
+            tokio::time::sleep(Duration::from_secs(settings.interval_seconds)).await;
+        }
+    });
+}
+
+fn start_sms_workers(weak: std::sync::Weak<AppState>) {
+    tokio::spawn(async move {
+        let mut workers =
+            std::collections::HashMap::<String, (String, tokio::task::JoinHandle<()>)>::new();
+        loop {
+            let Some(state) = weak.upgrade() else {
+                break;
+            };
+            let cfg = state.config();
+            let active = cfg
+                .modems
+                .iter()
+                .filter(|m| {
+                    m.enabled
+                        && matches!(m.sms.mode, crate::sms::Mode::Poll | crate::sms::Mode::Urc)
+                })
+                .collect::<Vec<_>>();
+            workers.retain(|id, (_, handle)| {
+                let keep = active.iter().any(|m| &m.id == id);
+                if !keep {
+                    handle.abort();
+                }
+                keep
+            });
+            for modem in active {
+                let signature = serde_json::to_string(modem).expect("serializable modem");
+                if workers
+                    .get(&modem.id)
+                    .is_some_and(|(old, handle)| old == &signature && !handle.is_finished())
+                {
+                    continue;
+                }
+                if let Some((_, handle)) = workers.remove(&modem.id) {
+                    handle.abort();
+                }
+                let modem = modem.clone();
+                let id = modem.id.clone();
+                let pool = state.ports.clone();
+                let db = std::path::PathBuf::from(&cfg.storage.sqlite);
+                let statuses = state.sms_status.clone();
+                let handle = tokio::spawn(async move {
+                    let mut receiver = None;
+                    let mut prefix = String::new();
+                    loop {
+                        let attempt = async {
+                            if modem.sms.mode == crate::sms::Mode::Urc && receiver.is_none() {
+                                let (rx, rule) = crate::sms::setup_urc(&modem, &pool).await?;
+                                receiver = Some(rx);
+                                prefix = rule;
+                            }
+                            crate::sms::sync(
+                                modem.clone(),
+                                pool.clone(),
+                                db.clone(),
+                                modem.sms.memories[0].clone(),
+                            )
+                            .await
+                        }
+                        .await;
+                        let mut snapshot = match attempt {
+                            Ok(data) => {
+                                json!({"state":"ready","last_sync_at":crate::sms::database::now(),"result":data})
+                            }
+                            Err(error) => {
+                                receiver = None;
+                                json!({"state":"degraded","last_attempt_at":crate::sms::database::now(),"error":error.to_string()})
+                            }
+                        };
+                        snapshot["mode"] = json!(modem.sms.mode);
+                        statuses.lock().await.insert(modem.id.clone(), snapshot);
+                        if let Some(rx) = receiver.as_mut() {
+                            loop {
+                                match rx.recv().await {
+                                    Ok(event) if event.correlation == "closed" => {
+                                        receiver = None;
+                                        break;
+                                    }
+                                    Ok(event)
+                                        if event.correlation == "unsolicited"
+                                            && event.line.starts_with(&prefix) =>
+                                    {
+                                        break;
+                                    }
+                                    Ok(_) => {}
+                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        receiver = None;
+                                        break;
+                                    }
+                                }
+                            }
+                            tokio::time::sleep(Duration::from_millis(300)).await;
+                        } else {
+                            tokio::time::sleep(Duration::from_secs(
+                                modem.sms.poll_interval_seconds,
+                            ))
+                            .await;
+                        }
+                    }
+                });
+                workers.insert(id, (signature, handle));
+            }
+            drop(state);
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        for (_, (_, handle)) in workers {
+            handle.abort();
+        }
+    });
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NetworkOperation {
+    operation: String,
+}
+async fn network_operation(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    input: Result<Json<NetworkOperation>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let modem = configured_modem(&state, &id)?;
+    let operation = body(input)?.operation;
+    let ports = state.ports.clone();
+    let manager = state.network.clone();
+    let runtime = state.runtime.clone();
+    let value =
+        tokio::spawn(async move { manager.operate(modem, ports, runtime, &operation).await })
+            .await
+            .map_err(|_| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "network_worker_failed",
+                    "Network worker stopped",
+                )
+            })?
+            .map_err(|e| ApiError::new(StatusCode::BAD_GATEWAY, "network_failed", e.to_string()))?;
+    Ok(success(value))
+}
+
+async fn switch_sim_workflow(
+    state: Shared,
+    id: String,
+    operation: vendor::Operation,
+) -> Result<Json<Value>, ApiError> {
+    let modem = configured_modem(&state, &id)?;
+    let program = vendor::plan(&modem, &operation, &state.runtime)
+        .map_err(|e| ApiError::invalid(e.to_string()))?;
+    let task = tokio::spawn(async move {
+        let lock = state.network.lock(&id).await;
+        let _guard = lock.lock().await;
+        if let vendor::Operation::SetSimSlot { slot } = &operation
+            && vendor::family(&modem).map_err(|e| ApiError::invalid(e.to_string()))?
+                == vendor::Family::TdtechMt5700
+        {
+            // Upstream persists this software state even when opening the AT port fails.
+            state.runtime.set(&id, *slot).map_err(|e| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "runtime_state_failed",
+                    e.to_string(),
+                )
+            })?;
+        }
+        let port = state.ports.get(&modem.at_port).await.map_err(|_| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "serial_unavailable",
+                "Could not open the configured AT port",
+            )
+        })?;
+        let replies = port.run_named(program, Some(id), "set_sim_slot").await?;
+        state.status.invalidate().await;
+        let mut result = vendor::finish(&modem, &operation, &replies).map_err(|e| {
+            ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "invalid_modem_response",
+                e.to_string(),
+            )
+        })?;
+        if result["success"] != true {
+            let mut error = ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "sim_switch_unconfirmed",
+                "SIM switch did not complete",
+            );
+            error.details = Some(result);
+            return Err(error);
+        }
+        match state
+            .network
+            .operate_locked(modem, state.ports.clone(), state.runtime.clone(), "redial")
+            .await
+        {
+            Ok(network) => {
+                result["network"] = network;
+                Ok(success(result))
+            }
+            Err(error) => {
+                result["success"] = json!(false);
+                result["sim_switched"] = json!(true);
+                result["redial_error"] = json!(error.to_string());
+                let mut failure = ApiError::new(
+                    StatusCode::BAD_GATEWAY,
+                    "sim_redial_failed",
+                    "SIM switched, but network redial failed",
+                );
+                failure.details = Some(result);
+                Err(failure)
+            }
+        }
+    });
+    task.await.map_err(|_| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "sim_worker_failed",
+            "SIM worker stopped",
+        )
+    })?
+}
+fn start_network_workers(weak: std::sync::Weak<AppState>) {
+    tokio::spawn(async move {
+        let mut attempted = std::collections::HashMap::<String, String>::new();
+        loop {
+            let Some(state) = weak.upgrade() else {
+                break;
+            };
+            let cfg = state.config();
+            for modem in cfg
+                .modems
+                .iter()
+                .filter(|m| m.enabled && m.network.auto_connect)
+            {
+                let key = serde_json::to_string(modem).expect("serializable modem");
+                if attempted.get(&modem.id) == Some(&key) {
+                    continue;
+                }
+                if !std::path::Path::new(&modem.at_port).exists() {
+                    continue;
+                }
+                attempted.insert(modem.id.clone(), key);
+                let manager = state.network.clone();
+                let ports = state.ports.clone();
+                let runtime = state.runtime.clone();
+                let modem = modem.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = manager
+                        .operate(modem.clone(), ports, runtime, "connect")
+                        .await
+                    {
+                        tracing::warn!(modem_id=%modem.id,error=%error,"automatic connection failed");
+                    }
+                });
+            }
+            attempted.retain(|id, _| {
+                cfg.modems.iter().any(|m| {
+                    &m.id == id
+                        && m.enabled
+                        && m.network.auto_connect
+                        && std::path::Path::new(&m.at_port).exists()
+                })
+            });
+            drop(state);
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    });
 }

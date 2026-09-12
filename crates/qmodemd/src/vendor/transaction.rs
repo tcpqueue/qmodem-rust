@@ -12,6 +12,9 @@ pub fn local(device: &Modem, op: &Operation, runtime: &Runtime) -> Result<Option
         return Ok(None);
     }
     let data = match op {
+        Operation::GetUsageStats => {
+            json!({"available":false,"total_rx_bytes":0,"total_tx_bytes":0})
+        }
         Operation::GetSimSlot => {
             json!({"sim_slot":runtime.slot(&device.id)?,"source":"software","hardware_verified":false})
         }
@@ -26,6 +29,12 @@ pub fn plan(device: &Modem, op: &Operation, runtime: &Runtime) -> Result<Box<dyn
     let family = family(device)?;
     let command = |c: &str| Step::command(c, Duration::from_secs(10));
     let (steps, continue_on_error) = match op {
+        Operation::GetNeighborcell => (cells::query(device)?, true),
+        Operation::SetCellLock { lock } => (vec![cells::lock(device, lock)?], false),
+        Operation::UnlockCell => (cells::unlock(device)?, true),
+        Operation::GetUsageStats | Operation::WriteUsageStats | Operation::ClearUsageStats => {
+            (vec![usage::command(device, op)?], false)
+        }
         Operation::GetBandLock => (bands::query(device)?, true),
         Operation::SetBandLock { band_class, bands } => {
             (vec![bands::setter(device, *band_class, bands)?], false)
@@ -82,6 +91,16 @@ pub fn plan(device: &Modem, op: &Operation, runtime: &Runtime) -> Result<Box<dyn
 pub fn finish(device: &Modem, op: &Operation, replies: &[Reply]) -> Result<Value> {
     ensure!(!replies.is_empty(), "empty vendor transaction");
     match op {
+        Operation::GetNeighborcell => cells::interpret(device, replies),
+        Operation::GetUsageStats => Ok(
+            json!({"success":true,"data":usage::interpret(device,&replies[0]),"replies":replies}),
+        ),
+        Operation::SetCellLock { .. }
+        | Operation::UnlockCell
+        | Operation::WriteUsageStats
+        | Operation::ClearUsageStats => Ok(
+            json!({"success":replies.iter().all(|r|r.modem_success),"data":{},"replies":replies}),
+        ),
         Operation::GetBandLock => bands::interpret(device, replies),
         Operation::GetSimCapabilities => Ok(
             json!({"success":replies[0].modem_success,"data":sim::capabilities(&replies[0].response),"replies":replies}),

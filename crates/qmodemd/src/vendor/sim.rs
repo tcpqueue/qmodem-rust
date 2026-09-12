@@ -71,7 +71,7 @@ impl Runtime {
             _ => bail!("invalid software SIM state"),
         }
     }
-    fn set(&self, id: &str, slot: u8) -> Result<()> {
+    pub fn set(&self, id: &str, slot: u8) -> Result<()> {
         ensure!(slot <= 1, "invalid MT5700 slot");
         self.directory()?;
         let mut file = tempfile::NamedTempFile::new_in(&self.root)?;

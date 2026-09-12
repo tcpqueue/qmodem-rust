@@ -355,3 +355,43 @@ async fn aliases_of_one_native_device_share_queue_and_monitor() {
     assert_eq!(canonical, path);
     assert_eq!(view.state, "idle");
 }
+
+#[tokio::test]
+async fn close_rejects_active_transactions_and_stale_handles() {
+    let (client, mut modem) = duplex(4096);
+    let port = Port::start(client);
+    let saved = port.clone();
+    let handle = tokio::spawn(async move { saved.execute(vec![command("AT")]).await });
+    let mut buf = [0; 4];
+    modem.read_exact(&mut buf).await.unwrap();
+    assert!(port.close().await.is_err());
+    modem.write_all(b"OK\r\n").await.unwrap();
+    handle.await.unwrap().unwrap();
+    port.close().await.unwrap();
+    assert_eq!(port.snapshot().state, "closed");
+    assert_eq!(
+        port.execute(vec![command("AT")]).await.unwrap_err().kind,
+        ErrorKind::Closed
+    );
+    assert_eq!(modem.read(&mut buf).await.unwrap(), 0);
+}
+#[tokio::test]
+async fn pool_reopens_after_close_without_reusing_old_handles() {
+    let pty = nix::pty::openpty(None, None).unwrap();
+    let path = nix::unistd::ttyname(&pty.slave).unwrap();
+    drop(pty.slave);
+    let path = path.to_str().unwrap();
+    let pool = PortPool::default();
+    let first = pool.get(path).await.unwrap();
+    let mut events = first.subscribe();
+    pool.close(path).await.unwrap();
+    assert_eq!(events.recv().await.unwrap().correlation, "closed");
+    let second = pool.get(path).await.unwrap();
+    assert_eq!(second.snapshot().state, "idle");
+    assert_eq!(
+        first.execute(vec![command("AT")]).await.unwrap_err().kind,
+        ErrorKind::Closed
+    );
+    pool.close(path).await.unwrap();
+    drop(pty.master);
+}

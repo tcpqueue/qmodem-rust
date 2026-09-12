@@ -14,6 +14,27 @@ pub struct Config {
     pub auth: Auth,
     #[serde(default)]
     pub modems: Vec<Modem>,
+    #[serde(default)]
+    pub discovery: Discovery,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Discovery {
+    pub enabled: bool,
+    pub interval_seconds: u64,
+    pub auto_register: bool,
+    pub bind_option_driver: bool,
+}
+impl Default for Discovery {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_seconds: 15,
+            auto_register: true,
+            bind_option_driver: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +133,10 @@ pub struct Modem {
     pub apn: String,
     #[serde(default)]
     pub bands: crate::vendor::bands::Overrides,
+    #[serde(default)]
+    pub sms: crate::sms::Settings,
+    #[serde(default)]
+    pub network: crate::network::Settings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -149,6 +174,10 @@ impl Config {
             "unsupported configuration version: {}",
             self.version
         );
+        ensure!(
+            (5..=3600).contains(&self.discovery.interval_seconds),
+            "discovery interval must be 5 to 3600 seconds"
+        );
         ensure!(self.server.port != 0, "port must be between 1 and 65535");
         ensure!(
             Path::new(&self.storage.sqlite).is_absolute(),
@@ -161,6 +190,11 @@ impl Config {
         );
         for modem in &self.modems {
             modem.bands.validate()?;
+            modem.sms.validate()?;
+            modem.network.validate()?;
+            if let Some(interface) = &modem.interface {
+                validate_interface(interface)?;
+            }
         }
         validate_interface(&self.server.interface)?;
         ensure!(
@@ -174,8 +208,15 @@ impl Config {
             "auth.token_hash must be a lowercase SHA-256 hex digest"
         );
         let mut ids = HashSet::new();
+        let mut logical_names = HashSet::new();
         for modem in &self.modems {
             crate::vendor::family(modem)?;
+            let logical = crate::network::interface_name(modem);
+            ensure!(
+                logical_names.insert(logical.clone())
+                    && logical_names.insert(format!("{logical}v6")),
+                "duplicate logical network interface"
+            );
             ensure!(
                 !modem.id.is_empty()
                     && modem.id.len() <= 64

@@ -121,3 +121,34 @@ MT5700 允许槽位 0/1。卡槽读取和能力信息不发送 AT，返回 `sour
 这些计数表示 AT 事务的传输结果；例如收到一组 OK 但业务验证未通过，传输仍可记为完成，具体业务是否成功以 action 响应为准。CLI 的独立 `at` 进程不属于 HTTP 服务队列，串口独占会阻止它与已打开设备同时读写。
 
 内嵌页面位于 `/` 和 `/queues`。默认每秒读取一次队列，支持三秒或手动刷新；标签页隐藏时暂停，恢复可见后重新读取。网络错误时标明数据未更新及最后成功时间。
+
+## Additional migration endpoints
+
+All endpoints below require the same bearer token.
+
+- `GET /api/v1/discovery`: sysfs inventory without AT transmission.
+- `POST /api/v1/discovery/{id}/probe`: bounded native identification.
+- `POST /api/v1/discovery/{id}/bind`: apply the matching upstream option-driver rule.
+- `GET|PUT|DELETE /api/v1/modems/{id}/config`: complete modem TOML entry; writes apply live.
+- `POST /api/v1/modems/{id}/ports/close`: `{ "role": "at" | "sms" }`; busy ports return 409.
+- `GET /api/v1/modems/{id}/status`: coalesced status transaction, cache lifetime 3 seconds.
+- `POST /api/v1/modems/{id}/network`: operation `plan`, `status`, `connect`, `disconnect`, `redial`.
+  Mutation requires OpenWrt. `connecting` is not proof that an IP address was acquired.
+- New vendor actions: `get_neighborcell`, `set_cell_lock` (`lock` object with `rat`,
+  `arfcn`, `pci`, optional `scs` index and `band`), `unlock_cell`, `get_usage_stats`,
+  `write_usage_stats`, `clear_usage_stats`.
+- SIM switch workflow now returns `sim_redial_failed` if switching succeeds but redial
+  fails. Error details retain `sim_switched: true`; callers must not blindly retry.
+- `GET /api/v1/modems/{id}/sms`: optional `peer`, `before` cursor and `limit` (1–200).
+- `GET /api/v1/modems/{id}/sms/conversations`: conversation/unread summaries.
+- `GET|PATCH|DELETE /api/v1/modems/{id}/sms/{message}`: history detail, `{ "is_read": true }`, deletion.
+- `POST /api/v1/modems/{id}/sms/sync`: `{ "memory": "SM" }` imports without deleting SIM data.
+- `POST /api/v1/modems/{id}/sms/send`: `request_id`, `peer`, `content`. Reuse the same
+  request ID after uncertain HTTP delivery. `submitted` means modem accepted the SMS;
+  it is not a recipient delivery confirmation. Transport uncertainty is stored as `unknown`.
+- `GET|DELETE /api/v1/modems/{id}/sms/sim`: list with `memory`; deletion requires
+  `index`, `memory`, `expected_pdu`, checked with CMGR immediately before CMGD.
+- `GET|PUT /api/v1/modems/{id}/sms/storage`: query/set modem memory.
+- `GET|PUT /api/v1/modems/{id}/sms/config`: mode `manual|poll|urc|sim_only`,
+  `poll_interval_seconds`, three `memories` entries. URC mode requires the original
+  model and firmware rule; mismatch remains degraded, without inventing CNMI commands.

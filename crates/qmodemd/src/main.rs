@@ -1,9 +1,13 @@
 mod at;
 mod auth;
 mod config;
+mod discovery;
 mod http;
 mod listener;
 mod logging;
+mod network;
+mod sms;
+mod status;
 mod storage;
 mod vendor;
 mod web;
@@ -105,7 +109,7 @@ async fn main() -> Result<()> {
         Command::InitAuth => println!("{}", json!({"token":auth::initialize(&cli.config)?})),
         Command::Serve => {
             logging::init(&cfg.logging)?;
-            if let Err(error) = serve(cfg).await {
+            if let Err(error) = serve(cfg, cli.config).await {
                 tracing::error!(error=%error,"service stopped with an error");
                 return Err(error);
             }
@@ -113,7 +117,7 @@ async fn main() -> Result<()> {
     }
     Ok(())
 }
-async fn serve(cfg: Config) -> Result<()> {
+async fn serve(cfg: Config, path: PathBuf) -> Result<()> {
     ensure!(
         cfg.server.listen.is_loopback() || !cfg.auth.token_hash.is_empty(),
         "non-loopback listening requires an access token; run init-auth first"
@@ -122,7 +126,7 @@ async fn serve(cfg: Config) -> Result<()> {
     let _db = storage::initialize(std::path::Path::new(&cfg.storage.sqlite))?;
     tracing::info!(listen=%listener.local_addr()?,interface=%cfg.server.interface,level=cfg.logging.level.as_str(),"service started");
     tracing::debug!("SQLite schema ready");
-    axum::serve(listener, http::router(cfg))
+    axum::serve(listener, http::router_with_path(cfg, Some(path)))
         .with_graceful_shutdown(shutdown())
         .await?;
     tracing::info!("service stopped");

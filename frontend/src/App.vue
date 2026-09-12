@@ -26,6 +26,14 @@ import {
   Search,
 } from "@element-plus/icons-vue";
 import type { Snapshot, Port, Modem } from "./types";
+import Devices from "./Devices.vue";
+const page = ref("queues");
+const pageTitle = computed(
+  () =>
+    ({ queues: "AT 队列", devices: "模组管理", discovery: "设备发现" })[
+      page.value
+    ],
+);
 const inputToken = ref(""),
   token = ref(""),
   snapshot = ref<Snapshot | null>(null),
@@ -222,7 +230,20 @@ function inspect(modem: Modem, port: Port) {
         ><strong>QModem<span>模组管理</span></strong></a
       >
       <div class="nav-caption">运行监控</div>
-      <div class="nav-active"><List /><span>AT 队列</span><ArrowRight /></div>
+      <button
+        v-for="[key, label] in [
+          ['devices', '模组管理'],
+          ['discovery', '设备发现'],
+          ['queues', 'AT 队列'],
+        ]"
+        :key="key"
+        class="nav-item"
+        :class="{ 'nav-active': page === key }"
+        @click="page = key"
+      >
+        <List /><span>{{ label }}</span
+        ><ArrowRight />
+      </button>
       <div class="sidebar-footer">
         <span class="service-dot"></span>Rust 原生服务<small
           >开发版本 · 功能迁移中</small
@@ -231,7 +252,9 @@ function inspect(modem: Modem, port: Port) {
     </aside>
     <div class="workspace">
       <header class="topbar">
-        <div>运行监控 <span>/</span> <strong>AT 队列</strong></div>
+        <div>
+          运行监控 <span>/</span> <strong>{{ pageTitle }}</strong>
+        </div>
         <div class="topbar-right">
           <span class="live" :class="{ stale: !!error }">{{
             error && connected
@@ -249,8 +272,16 @@ function inspect(modem: Modem, port: Port) {
         <div class="page-heading">
           <div>
             <div class="eyebrow">MODEM OPERATIONS</div>
-            <h1>AT 队列监控</h1>
-            <p>查看每个模组、每个端口的任务执行情况。</p>
+            <h1>{{ pageTitle }}</h1>
+            <p>
+              {{
+                page === "queues"
+                  ? "查看每个模组、每个端口的任务执行情况。"
+                  : page === "discovery"
+                    ? "识别设备与端口，建立模组配置。"
+                    : "查看连接状态、信号与流量，调整模组设置。"
+              }}
+            </p>
           </div>
           <div class="heading-note">
             <Connection /><span
@@ -261,7 +292,7 @@ function inspect(modem: Modem, port: Port) {
         <section v-if="!connected" class="login-card">
           <div class="lock-icon"><Lock /></div>
           <h2>连接模组管理服务</h2>
-          <p>使用 LuCI 中生成的访问令牌查看队列。</p>
+          <p>使用 LuCI 中生成的访问令牌管理模组。</p>
           <form @submit.prevent="login">
             <label for="token">访问令牌</label
             ><ElInput
@@ -287,6 +318,12 @@ function inspect(modem: Modem, port: Port) {
             :closable="false"
           /><small>令牌仅在当前页面内存中使用，关闭页面后清除。</small>
         </section>
+        <Devices
+          v-else-if="page !== 'queues'"
+          :token="token"
+          :page="page"
+          @changed="refresh"
+        />
         <template v-else>
           <ElAlert
             v-if="error"
@@ -380,9 +417,7 @@ function inspect(modem: Modem, port: Port) {
                     >
                   </h3>
                   <p>
-                    {{
-                      modem.manufacturer === "quectel" ? "移远" : "TD Tech"
-                    }}
+                    {{ modem.manufacturer === "quectel" ? "移远" : "TD Tech" }}
                     · {{ modem.model || "未指定型号" }}
                     <span class="dot-separator">·</span> {{ modem.id }}
                   </p>

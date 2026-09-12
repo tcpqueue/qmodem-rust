@@ -7,8 +7,10 @@
 //! AT compatibility is separate from transport and HTTP. Do not infer a command
 //! family from USB vendor name alone: MT5700 is tagged "huawei" in upstream data.
 pub mod bands;
+pub mod cells;
 mod sim;
 mod transaction;
+mod usage;
 pub use sim::Runtime;
 pub use transaction::{finish, local, plan};
 
@@ -76,10 +78,24 @@ pub enum Operation {
         imei: String,
     },
     SoftReboot,
+    GetNeighborcell,
+    SetCellLock {
+        lock: cells::Lock,
+    },
+    UnlockCell,
+    GetUsageStats,
+    WriteUsageStats,
+    ClearUsageStats,
 }
 impl Operation {
     pub fn name(&self) -> &'static str {
         match self {
+            Self::GetNeighborcell => "get_neighborcell",
+            Self::SetCellLock { .. } => "set_cell_lock",
+            Self::UnlockCell => "unlock_cell",
+            Self::GetUsageStats => "get_usage_stats",
+            Self::WriteUsageStats => "write_usage_stats",
+            Self::ClearUsageStats => "clear_usage_stats",
             Self::GetImei => "get_imei",
             Self::SetImei { .. } => "set_imei",
             Self::GetMode => "get_mode",
@@ -114,6 +130,12 @@ pub fn prepare(device: &Modem, operation: &Operation) -> Result<Step> {
         );
     }
     let command = match operation {
+        Operation::GetNeighborcell
+        | Operation::SetCellLock { .. }
+        | Operation::UnlockCell
+        | Operation::GetUsageStats
+        | Operation::WriteUsageStats
+        | Operation::ClearUsageStats => bail!("operation requires a transaction"),
         Operation::GetImei => "AT+CGSN".into(),
         Operation::SoftReboot => "AT+CFUN=1,1".into(),
         Operation::GetMode => match family {
