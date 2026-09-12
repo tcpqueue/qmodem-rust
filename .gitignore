@@ -1,0 +1,10 @@
+/target/
+/web/node_modules/
+/web/dist/
+*.sqlite*
+*.db
+*.db-shm
+*.db-wal
+.env.local
+/config/local.toml
+/work/

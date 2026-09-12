@@ -1,0 +1,38 @@
+{
+  "luci-app-qmodem-rust": {
+    "description": "Control the QModem Rust service",
+    "read": {
+      "ubus": {
+        "rc": [
+          "list"
+        ],
+        "service": [
+          "list"
+        ],
+        "file": [
+          "exec"
+        ]
+      },
+      "file": {
+        "/usr/sbin/qmodemd --config /etc/qmodem-rust.toml service-info": [
+          "exec"
+        ]
+      }
+    },
+    "write": {
+      "ubus": {
+        "rc": [
+          "init"
+        ],
+        "file": [
+          "exec"
+        ]
+      },
+      "file": {
+        "/usr/sbin/qmodemd --config /etc/qmodem-rust.toml set-service --listen * --port *": [
+          "exec"
+        ]
+      }
+    }
+  }
+}

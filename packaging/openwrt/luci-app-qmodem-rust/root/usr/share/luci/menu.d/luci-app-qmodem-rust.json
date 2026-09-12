@@ -1,0 +1,8 @@
+{
+  "admin/services/qmodem-rust": {
+    "title": "QModem Rust",
+    "order": 60,
+    "action": {"type": "view", "path": "qmodem-rust/service"},
+    "depends": {"acl": ["luci-app-qmodem-rust"]}
+  }
+}

@@ -1,0 +1,23 @@
+# 服务管理与模组业务共用此配置。首次部署后按设备实际情况修改。
+version = 1
+
+[server]
+listen = "127.0.0.1"
+port = 8088
+
+[storage]
+sqlite = "/var/lib/qmodem-rust/qmodem.sqlite3"
+
+# 模组业务尚在迁移中；以下字段先固定配置契约。
+# [[modems]]
+# id = "modem_1"
+# name = "主模组"
+# enabled = true
+# manufacturer = "quectel"
+# platform = "qualcomm"
+# at_port = "/dev/ttyUSB2"
+# sms_at_port = "/dev/ttyUSB3"
+# interface = "wwan0"
+# bus = "usb"
+# pdp_index = 1
+# apn = ""
