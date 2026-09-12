@@ -11,7 +11,7 @@ pub fn initialize(path: &Path) -> Result<Connection> {
     db.pragma_update(None, "journal_mode", "WAL")?;
     db.pragma_update(None, "foreign_keys", "ON")?;
     let version: u32 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    ensure!(version <= 2, "database was created by a newer version");
+    ensure!(version <= 5, "database was created by a newer version");
     if version == 0 {
         let tx = db.transaction()?;
         tx.execute_batch(
@@ -49,6 +49,25 @@ pub fn initialize(path: &Path) -> Result<Connection> {
             PRAGMA user_version=2;")?;
         tx.commit()?;
     }
+    if version <= 2 {
+        let tx = db.transaction()?;
+        tx.execute_batch("CREATE TABLE sms_forward_start(modem_id TEXT NOT NULL,sink_id TEXT NOT NULL,minimum_id INTEGER NOT NULL,PRIMARY KEY(modem_id,sink_id));
+        CREATE TABLE sms_deliveries(id INTEGER PRIMARY KEY,message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,modem_id TEXT NOT NULL,sink_id TEXT NOT NULL,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,available_at INTEGER NOT NULL,claim_token TEXT,last_error TEXT,UNIQUE(message_id,sink_id));
+        CREATE INDEX sms_deliveries_due ON sms_deliveries(state,available_at);
+        PRAGMA user_version=3;")?;
+        tx.commit()?;
+    }
+    if version <= 3 {
+        let tx = db.transaction()?;
+        tx.execute_batch("ALTER TABLE traffic ADD COLUMN source TEXT NOT NULL DEFAULT 'unknown';
+        ALTER TABLE sms_forward_start ADD COLUMN fingerprint TEXT NOT NULL DEFAULT '';
+        CREATE TABLE legacy_imports(modem_id TEXT NOT NULL, source TEXT NOT NULL, record_key TEXT NOT NULL, imported_at INTEGER NOT NULL, PRIMARY KEY(modem_id,source,record_key));
+        PRAGMA user_version=4;")?;
+        tx.commit()?;
+    }
+    if version <= 4 {
+        db.execute_batch("CREATE TABLE maintenance_runs(modem_id TEXT NOT NULL, action TEXT NOT NULL,period TEXT NOT NULL,state TEXT NOT NULL,PRIMARY KEY(modem_id,action,period)); PRAGMA user_version=5;")?;
+    }
     Ok(db)
 }
 
@@ -69,8 +88,11 @@ mod tests {
             .unwrap();
         assert_eq!(content, "测试");
         assert!(
-            db.execute("INSERT INTO traffic VALUES ('m1',1,-1,0)", [])
-                .is_err()
+            db.execute(
+                "INSERT INTO traffic(modem_id,timestamp,rx_bytes,tx_bytes) VALUES ('m1',1,-1,0)",
+                []
+            )
+            .is_err()
         );
     }
 
@@ -79,7 +101,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("q.sqlite3");
         let db = Connection::open(&path).unwrap();
-        db.pragma_update(None, "user_version", 3).unwrap();
+        db.pragma_update(None, "user_version", 6).unwrap();
         drop(db);
         assert!(initialize(&path).is_err());
     }

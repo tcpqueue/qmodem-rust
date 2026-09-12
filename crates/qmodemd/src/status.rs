@@ -15,10 +15,11 @@ use std::{
 use tokio::sync::Mutex;
 
 type Records = BTreeMap<String, Reply>;
-type Entry = Arc<Mutex<Option<(Instant, Value)>>>;
+type Entry = Arc<Mutex<Option<(Instant, u64, Value)>>>;
 #[derive(Default)]
 pub struct Cache {
     entries: Mutex<HashMap<String, Entry>>,
+    generation: std::sync::atomic::AtomicU64,
 }
 impl Cache {
     pub async fn get(&self, modem: &Modem, ports: &PortPool) -> Result<Value> {
@@ -31,9 +32,10 @@ impl Cache {
             entries.entry(key).or_default().clone()
         };
         let mut cached = entry.lock().await;
-        if let Some((time, value)) = cached
+        let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
+        if let Some((time, _, value)) = cached
             .as_ref()
-            .filter(|(t, _)| t.elapsed() < Duration::from_secs(3))
+            .filter(|(t, g, _)| *g == generation && t.elapsed() < Duration::from_secs(3))
         {
             let mut value = value.clone();
             value["cache_age_ms"] = json!(time.elapsed().as_millis() as u64);
@@ -45,11 +47,12 @@ impl Cache {
         port.run_named(Box::new(program), Some(modem.id.clone()), "status")
             .await?;
         let value = report(modem, &records.lock().unwrap());
-        *cached = Some((Instant::now(), value.clone()));
+        *cached = Some((Instant::now(), generation, value.clone()));
         Ok(value)
     }
     pub async fn invalidate(&self) {
-        self.entries.lock().await.clear();
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 struct StatusProgram {
@@ -213,7 +216,8 @@ fn report(modem: &Modem, records: &Records) -> Value {
             .map(f64::from)
     } else {
         pref(records, "temperature", "^CHIPTEMP:")
-            .and_then(|l| fields(l).get(5).and_then(|s| s.parse().ok()))
+            .and_then(|l| fields(l).get(5).and_then(|s| s.parse::<f64>().ok()))
+            .map(|value| value / 10.0)
     };
     let voltage = pref(records, "voltage", "+CBC:")
         .and_then(|l| fields(l).get(2).and_then(|v| v.parse::<u32>().ok()));
@@ -265,7 +269,7 @@ fn report(modem: &Modem, records: &Records) -> Value {
         "temperature_c":temp,"voltage_mv":voltage,"sim_status":sim_status,"imei":scalar(records,"imei"),"imsi":scalar(records,"imsi"),"iccid":iccid,
         "phone_number":pref(records,"number","+CNUM:").and_then(|l|fields(l).get(1).cloned()),"operator":operator,
         "sim_slot":pref(records,"sim_slot","+QUIMSLOT:").or_else(||pref(records,"sim_slot","+QUSIMSLOT:")),
-        "network_type":pref(records,"network_type","+QNWINFO:").and_then(|l|fields(l).first().cloned()),"csq":csq,"rssi_dbm":csq.map(|n|-113+2*i16::from(n)),
+        "network_type":pref(records,"network_type","+QNWINFO:").and_then(|l|fields(l).first().cloned()).or_else(||if quectel{None}else{cells.first().and_then(|c|c["rat"].as_str().map(str::to_owned))}),"csq":csq,"rssi_dbm":csq.map(|n|-113+2*i16::from(n)),
         "pdp_active":!addresses.is_empty(),"addresses":addresses,"cells":cells,"partial":records.values().any(|r|!r.modem_success),"queries":raw})
 }
 fn map_fields(f: &[String], pairs: &[(&str, usize)]) -> Value {
@@ -551,5 +555,60 @@ mod tests {
         let cells = mt_cells(&records);
         assert_eq!(cells[0]["pci"], 113);
         assert_eq!(cells[0]["cell_id"], 660020);
+    }
+    #[test]
+    fn mt5700_b024_hardware_temperature_and_nr_response() {
+        let mut m = modem();
+        m.manufacturer = "tdtech".into();
+        m.model = "mt5700m-cn".into();
+        m.platform = "hisilicon".into();
+        let mut records = Records::new();
+        records.insert(
+            "model".into(),
+            reply(
+                "MT5700M-CN
+OK",
+            ),
+        );
+        records.insert(
+            "revision".into(),
+            reply(
+                "Manufacturer: TD Tech Ltd.
+Model: MT5700M-CN
+Revision: V200R001C20B024
+OK",
+            ),
+        );
+        records.insert(
+            "sim_status".into(),
+            reply(
+                "+CPIN: READY
+OK",
+            ),
+        );
+        records.insert(
+            "temperature".into(),
+            reply(
+                "^CHIPTEMP: 336,331,330,339,320,320,330,340,330,340,320,320
+OK",
+            ),
+        );
+        // Cell and location identifiers are replaced; field width and radio metrics are retained.
+        records.insert(
+            "serving".into(),
+            reply(
+                "^MONSC: NR,460,11,633984,1,A1234500C,F9,ABCDEF,-94,-10,30
+OK",
+            ),
+        );
+        let value = report(&m, &records);
+        assert_eq!(value["temperature_c"], 32.0);
+        assert_eq!(value["firmware"], "V200R001C20B024");
+        assert_eq!(value["sim_status"], "ready");
+        assert_eq!(value["network_type"], "NR");
+        assert_eq!(value["cells"][0]["pci"], 249);
+        assert_eq!(value["cells"][0]["rsrp"], "-94");
+        assert_eq!(value["cells"][0]["rsrq"], "-10");
+        assert_eq!(value["cells"][0]["sinr"], "30");
     }
 }

@@ -122,6 +122,10 @@ onMounted(() => run(load));
           placeholder="例如 /dev/cdc-wdm0" /></ElFormItem
       ><ElFormItem label="逻辑接口名称（留空自动生成）"
         ><ElInput v-model="config.network.logical_interface" /></ElFormItem
+      ><ElFormItem label="防火墙区域（留空不加入区域）"
+        ><ElInput
+          v-model="config.network.firewall_zone"
+          placeholder="wan" /></ElFormItem
       ><ElFormItem label="地址类型"
         ><ElSelect v-model="config.network.pdp_type"
           ><ElOption value="ip" label="IPv4" /><ElOption

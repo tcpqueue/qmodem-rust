@@ -5,14 +5,18 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=qmodem-rust
 PKG_VERSION:=0.1.0
-PKG_RELEASE:=3
+PKG_RELEASE:=4
 PKG_LICENSE:=GPL-3.0-only
+ifeq ($(strip $(QMODEM_PREBUILT_BIN)),)
 PKG_BUILD_DEPENDS:=rust/host
+endif
 PKG_BUILD_PARALLEL:=1
 PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)
 
 include $(INCLUDE_DIR)/package.mk
+ifeq ($(strip $(QMODEM_PREBUILT_BIN)),)
 include $(TOPDIR)/feeds/packages/lang/rust/rust-package.mk
+endif
 
 RUST_PKG_LOCKED:=1
 MAKE_PATH:=crates/qmodemd
@@ -21,7 +25,7 @@ define Package/qmodem-rust
   SECTION:=net
   CATEGORY:=Network
   TITLE:=QModem Rust modem service
-  DEPENDS:=+libgcc
+  DEPENDS:=+ubus +netifd +firewall4
 endef
 
 define Package/qmodem-rust/description
@@ -41,6 +45,21 @@ define Build/Prepare
 	$(CP) $(QMODEM_SOURCE_DIR)/frontend/dist $(PKG_BUILD_DIR)/frontend/
 endef
 
+ifneq ($(strip $(QMODEM_PREBUILT_BIN)),)
+define Build/Configure
+endef
+
+define Build/Compile
+	test -f "$(QMODEM_PREBUILT_BIN)"
+	$(QMODEM_SOURCE_DIR)/scripts/check-openwrt-binary.sh "$(QMODEM_PREBUILT_BIN)" "$(ARCH)"
+	$(INSTALL_DIR) $(PKG_INSTALL_DIR)/bin
+	$(INSTALL_BIN) "$(QMODEM_PREBUILT_BIN)" $(PKG_INSTALL_DIR)/bin/qmodemd
+endef
+
+define Build/Install
+endef
+endif
+
 define Package/qmodem-rust/install
 	$(INSTALL_DIR) $(1)/usr/sbin $(1)/etc/init.d
 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/bin/qmodemd $(1)/usr/sbin/qmodemd
@@ -50,4 +69,27 @@ define Package/qmodem-rust/install
 	$(CP) $(QMODEM_SOURCE_DIR)/NOTICE.md $(QMODEM_SOURCE_DIR)/licenses/* $(1)/usr/share/licenses/qmodem-rust/
 endef
 
+define Package/qmodem-rust-qmi
+  SECTION:=net
+  CATEGORY:=Network
+  TITLE:=QModem USB QMI protocol dependencies
+  DEPENDS:=+qmodem-rust +uqmi +kmod-usb-net-qmi-wwan
+endef
+
+define Package/qmodem-rust-mbim
+  SECTION:=net
+  CATEGORY:=Network
+  TITLE:=QModem USB MBIM protocol dependencies
+  DEPENDS:=+qmodem-rust +umbim +kmod-usb-net-cdc-mbim
+endef
+
+define Package/qmodem-rust-qmi/install
+	$(INSTALL_DIR) $(1)/usr/share/qmodem-rust
+endef
+define Package/qmodem-rust-mbim/install
+	$(INSTALL_DIR) $(1)/usr/share/qmodem-rust
+endef
+
 $(eval $(call BuildPackage,qmodem-rust))
+$(eval $(call BuildPackage,qmodem-rust-qmi))
+$(eval $(call BuildPackage,qmodem-rust-mbim))

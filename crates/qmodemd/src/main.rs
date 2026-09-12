@@ -3,9 +3,12 @@ mod auth;
 mod config;
 mod discovery;
 mod http;
+mod lifecycle;
 mod listener;
 mod logging;
+mod monitor;
 mod network;
+mod schedule;
 mod sms;
 mod status;
 mod storage;
@@ -29,6 +32,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Serve,
+    /// Run configured modem reboot hooks during router shutdown.
+    Shutdown,
     /// Send one command through the native serial transport (configured modems only).
     At {
         #[arg(long)]
@@ -103,6 +108,10 @@ async fn main() -> Result<()> {
             let replies = pool.get(&device.at_port).await?.execute(vec![step]).await?;
             println!("{}", serde_json::to_string(&replies)?);
         }
+        Command::Shutdown => {
+            logging::init(&cfg.logging)?;
+            lifecycle::shutdown(cfg).await;
+        }
         Command::Check => println!("configuration valid"),
         Command::ServiceInfo => println!("{}", http::service_info(&cfg)),
         Command::Interfaces => unreachable!(),
@@ -123,8 +132,12 @@ async fn serve(cfg: Config, path: PathBuf) -> Result<()> {
         "non-loopback listening requires an access token; run init-auth first"
     );
     let listener = listener::bind(&cfg.server)?;
-    let _db = storage::initialize(std::path::Path::new(&cfg.storage.sqlite))?;
+    let mut _db = storage::initialize(std::path::Path::new(&cfg.storage.sqlite))?;
     tracing::info!(listen=%listener.local_addr()?,interface=%cfg.server.interface,level=cfg.logging.level.as_str(),"service started");
+    _db.execute("UPDATE messages SET delivery_status='unknown' WHERE direction='sent' AND delivery_status='sending'",[])?;
+    for modem in &cfg.modems {
+        sms::forward::enqueue(&mut _db, &modem.id, &modem.sms.forwarding)?;
+    }
     tracing::debug!("SQLite schema ready");
     axum::serve(listener, http::router_with_path(cfg, Some(path)))
         .with_graceful_shutdown(shutdown())

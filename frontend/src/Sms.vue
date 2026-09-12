@@ -16,7 +16,9 @@ import {
   ElInputNumber,
   ElMessageBox,
 } from "element-plus";
+import Forwarding from "./Forwarding.vue";
 const props = defineProps<{ token: string; modem: string }>();
+const historyFile = ref<HTMLInputElement | null>(null);
 const tab = ref("history"),
   busy = ref(false),
   error = ref(""),
@@ -27,6 +29,7 @@ const tab = ref("history"),
   peer = ref(""),
   recipient = ref(""),
   content = ref(""),
+  rawPdu = ref(""),
   memory = ref("SM"),
   cursor = ref<number | null>(null),
   requestId = ref(crypto.randomUUID()),
@@ -113,7 +116,7 @@ async function send() {
   }
   await load();
 }
-watch([recipient, content], () => {
+watch([recipient, content, rawPdu], () => {
   requestId.value = crypto.randomUUID();
 });
 onMounted(() =>
@@ -150,8 +153,46 @@ async function deleteSim(row: any) {
   await listSim();
 }
 const date = (n: number) => new Date(n * 1000).toLocaleString();
+async function importHistory(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0];
+  if (!file) return;
+  await run(async () => {
+    if (file.size > 30 * 1024 * 1024) throw Error("文件不能超过 30 MB");
+    const document = JSON.parse(await file.text());
+    const data = await api("/import", "POST", { source: file.name, document });
+    notice.value =
+      "已导入 " + data.imported + " 条，跳过重复 " + data.skipped + " 条";
+  });
+  (event.target as HTMLInputElement).value = "";
+}
+async function sendPdu() {
+  await ElMessageBox.confirm("发送此 SMS-SUBMIT PDU？", "发送原始 PDU", {
+    confirmButtonText: "发送",
+    cancelButtonText: "取消",
+  });
+  const result = await api("/send-pdu", "POST", {
+    request_id: requestId.value,
+    pdu: rawPdu.value.replace(/\s+/g, ""),
+  });
+  notice.value = statuses[result.delivery_status] || result.delivery_status;
+  if (result.delivery_status === "submitted") {
+    rawPdu.value = "";
+    requestId.value = crypto.randomUUID();
+  }
+  await load();
+}
 </script>
 <template>
+  <input
+    ref="historyFile"
+    type="file"
+    accept=".json,application/json"
+    hidden
+    @change="importHistory"
+  />
+  <ElButton :disabled="busy" @click="historyFile?.click()"
+    >导入原项目短信历史 JSON</ElButton
+  >
   <div class="sms-workspace">
     <ElAlert
       v-if="error"
@@ -229,6 +270,24 @@ const date = (n: number) => new Date(n * 1000).toLocaleString();
           >加载更多</ElButton
         >
       </ElTabPane>
+      <ElTabPane label="原始 PDU" name="pdu"
+        ><ElForm label-position="top"
+          ><ElFormItem label="SMS-SUBMIT PDU（包含 SMSC 长度字节）"
+            ><ElInput
+              type="textarea"
+              :rows="6"
+              v-model="rawPdu"
+              :disabled="busy"
+              placeholder="十六进制 PDU" /></ElFormItem
+          ><ElButton
+            type="primary"
+            :disabled="!rawPdu"
+            :loading="busy"
+            @click="run(sendPdu)"
+            >发送 PDU</ElButton
+          ></ElForm
+        ></ElTabPane
+      >
       <ElTabPane label="发送短信" name="send"
         ><ElForm label-position="top" class="compose"
           ><ElFormItem label="收件号码"
@@ -295,6 +354,9 @@ const date = (n: number) => new Date(n * 1000).toLocaleString();
           ></ElTable
         ></ElTabPane
       >
+      <ElTabPane label="短信转发" name="forwarding" lazy
+        ><Forwarding :key="modem" :token="token" :modem="modem"
+      /></ElTabPane>
       <ElTabPane label="接收设置" name="config"
         ><ElForm label-position="top" class="compose"
           ><ElFormItem label="接收方式"

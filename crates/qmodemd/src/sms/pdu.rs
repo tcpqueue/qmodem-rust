@@ -69,7 +69,7 @@ fn unpack(data: &[u8], count: usize, offset: usize) -> Result<String> {
 pub fn hex(data: &[u8]) -> String {
     data.iter().map(|b| format!("{b:02X}")).collect()
 }
-fn unhex(text: &str) -> Result<Vec<u8>> {
+pub(super) fn unhex(text: &str) -> Result<Vec<u8>> {
     ensure!(
         text.len().is_multiple_of(2)
             && text.len() <= 4096

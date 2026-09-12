@@ -225,6 +225,15 @@ async fn set_storage(
 pub(super) fn routes() -> Router<Shared> {
     Router::new()
         .route(
+            "/api/v1/modems/{id}/sms/import",
+            post(import_legacy).layer(axum::extract::DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route("/api/v1/modems/{id}/sms/deliveries", get(deliveries))
+        .route(
+            "/api/v1/modems/{id}/sms/deliveries/{delivery}/retry",
+            post(retry_delivery),
+        )
+        .route(
             "/api/v1/modems/{id}/sms/config",
             get(settings).put(configure),
         )
@@ -236,6 +245,7 @@ pub(super) fn routes() -> Router<Shared> {
         )
         .route("/api/v1/modems/{id}/sms/sync", post(sync))
         .route("/api/v1/modems/{id}/sms/send", post(send))
+        .route("/api/v1/modems/{id}/sms/send-pdu", post(send_raw))
         .route(
             "/api/v1/modems/{id}/sms/sim",
             get(sim_list).delete(delete_sim),
@@ -265,6 +275,13 @@ async fn configure(
         .sms
         .validate()
         .map_err(|e| ApiError::invalid(e.to_string()))?;
+    let sinks = modem.sms.forwarding.clone();
+    let modem_id = id.clone();
+    database::run(db_path(&state), move |db| {
+        sms::forward::enqueue(db, &modem_id, &sinks)
+    })
+    .await
+    .map_err(failure)?;
     persist_modem(&state, id, Some(modem)).await?;
     Ok(success(json!({"saved":true})))
 }
@@ -276,6 +293,59 @@ async fn delete_sim(
 ) -> Result<Json<Value>, ApiError> {
     let modem = configured_modem(&state, &id)?;
     sms::delete_sim(&modem, &state.ports, body(input)?)
+        .await
+        .map(success)
+        .map_err(failure)
+}
+
+async fn deliveries(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    modem_id(&state, &id)?;
+    let items=database::run(db_path(&state),move|db|{let mut stmt=db.prepare("SELECT id,message_id,sink_id,state,attempts,available_at,last_error FROM sms_deliveries WHERE modem_id=? ORDER BY id DESC LIMIT 200")?;
+ Ok(stmt.query_map([id],|r|Ok(json!({"id":r.get::<_,i64>(0)?,"message_id":r.get::<_,i64>(1)?,"sink_id":r.get::<_,String>(2)?,"state":r.get::<_,String>(3)?,"attempts":r.get::<_,u32>(4)?,"available_at":r.get::<_,i64>(5)?,"last_error":r.get::<_,Option<String>>(6)?})))?.collect::<rusqlite::Result<Vec<_>>>()?)}).await.map_err(failure)?;
+    Ok(success(json!({"items":items})))
+}
+async fn retry_delivery(
+    State(state): State<Shared>,
+    Path((id, delivery)): Path<(String, i64)>,
+) -> Result<Json<Value>, ApiError> {
+    modem_id(&state, &id)?;
+    let changed=database::run(db_path(&state),move|db|Ok(db.execute("UPDATE sms_deliveries SET state='pending',attempts=0,available_at=?,last_error=NULL WHERE id=? AND modem_id=? AND state='failed'",rusqlite::params![database::now(),delivery,id])?)).await.map_err(failure)?;
+    Ok(success(json!({"retried":changed==1})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyImport {
+    source: String,
+    document: Value,
+}
+async fn import_legacy(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    input: Result<Json<LegacyImport>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    modem_id(&state, &id)?;
+    let request = body(input)?;
+    database::run(db_path(&state), move |db| {
+        sms::legacy::import(db, &id, &request.source, &request.document)
+    })
+    .await
+    .map(success)
+    .map_err(failure)
+}
+
+async fn send_raw(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    input: Result<Json<sms::RawSend>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let modem = configured_modem(&state, &id)?;
+    let request = body(input)?;
+    sms::pdu::decode(&request.pdu).map_err(|e| ApiError::invalid(e.to_string()))?;
+    sms::send_raw(modem, state.ports.clone(), db_path(&state), request)
         .await
         .map(success)
         .map_err(failure)

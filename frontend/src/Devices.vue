@@ -25,6 +25,9 @@ import {
 } from "element-plus";
 import Sms from "./Sms.vue";
 import Network from "./Network.vue";
+import Maintenance from "./Maintenance.vue";
+import Startup from "./Startup.vue";
+import Debug from "./Debug.vue";
 const props = defineProps<{ token: string; page: string }>();
 const emit = defineEmits<{ changed: [] }>();
 type RecordData = Record<string, any>;
@@ -45,9 +48,8 @@ const mode = ref("qmi"),
   imei = ref(""),
   bandClass = ref("lte"),
   bands = ref(""),
-  raw = ref("AT"),
-  timeout = ref(10000),
   lock = ref({ rat: "lte", arfcn: 1850, pci: 0, scs: 1, band: 78 }),
+  persistLock = ref(true),
   capabilities = ref<string[]>([]),
   neighbors = ref<RecordData | null>(null),
   usage = ref<RecordData | null>(null);
@@ -79,7 +81,8 @@ async function run(fn: () => Promise<void>) {
   try {
     await fn();
   } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
+    if (e !== "cancel" && e !== "close")
+      error.value = e instanceof Error ? e.message : String(e);
   } finally {
     busy.value = false;
   }
@@ -192,6 +195,20 @@ async function change(operation: string, args: RecordData = {}) {
   );
   await action(operation, args);
   status.value = null;
+}
+async function cellLock(value: RecordData | null) {
+  await ElMessageBox.confirm(
+    value ? "应用锁小区设置？" : "解除锁小区？",
+    "锁小区",
+    { confirmButtonText: "应用", cancelButtonText: "取消" },
+  );
+  result.value = await api("modems/" + selected.value + "/cell-lock", "PUT", {
+    lock: value,
+    persist: persistLock.value,
+  });
+  message.value = persistLock.value
+    ? "已应用，并保存开机恢复设置"
+    : "已应用，仅本次生效";
 }
 const metrics = [
   ["model", "型号"],
@@ -605,14 +622,13 @@ const metrics = [
                 :max="1024" /></ElFormItem
           ></ElForm>
           <div class="workbench-actions">
-            <ElButton
-              :disabled="busy"
-              type="primary"
-              @click="run(() => change('set_cell_lock', { lock }))"
-              >锁定小区</ElButton
+            <ElCheckbox v-model="persistLock">开机恢复此设置</ElCheckbox
             ><ElButton
               :disabled="busy"
-              @click="run(() => change('unlock_cell'))"
+              type="primary"
+              @click="run(() => cellLock(lock))"
+              >锁定小区</ElButton
+            ><ElButton :disabled="busy" @click="run(() => cellLock(null))"
               >解除锁定</ElButton
             >
           </div>
@@ -662,30 +678,15 @@ const metrics = [
         <ElTabPane label="短信" name="sms" lazy
           ><Sms :key="selected" :token="token" :modem="selected"
         /></ElTabPane>
-        <ElTabPane label="AT 调试" name="debug"
-          ><ElForm label-position="top"
-            ><ElFormItem label="AT 命令"
-              ><ElInput v-model="raw" placeholder="AT" /></ElFormItem
-            ><ElFormItem label="超时（毫秒）"
-              ><ElInputNumber
-                v-model="timeout"
-                :min="1"
-                :max="120000" /></ElFormItem
-            ><ElButton
-              :loading="busy"
-              type="primary"
-              @click="
-                run(async () => {
-                  result = await api(`modems/${selected}/at`, 'POST', {
-                    command: raw,
-                    timeout_ms: timeout,
-                  });
-                })
-              "
-              >发送命令</ElButton
-            ></ElForm
-          ></ElTabPane
-        >
+        <ElTabPane label="开机与硬件" name="startup" lazy
+          ><Startup :key="selected" :token="token" :modem="selected"
+        /></ElTabPane>
+        <ElTabPane label="自动维护" name="maintenance" lazy
+          ><Maintenance :key="selected" :token="token" :modem="selected"
+        /></ElTabPane>
+        <ElTabPane label="AT 调试与日志" name="debug" lazy
+          ><Debug :key="selected" :token="token" :modem="selected"
+        /></ElTabPane>
       </ElTabs>
       <details v-if="result" open class="operation-result">
         <summary>操作结果</summary>

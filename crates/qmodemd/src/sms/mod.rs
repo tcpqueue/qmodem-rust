@@ -1,10 +1,12 @@
 pub mod database;
+pub mod forward;
+pub mod legacy;
 pub mod pdu;
 use crate::{
     at::{AtError, Next, PortPool, Program, Reply, Sequence, Step},
     config::Modem,
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{path::PathBuf, time::Duration};
@@ -129,10 +131,69 @@ pub async fn send(modem: Modem, pool: PortPool, path: PathBuf, request: Send) ->
     getrandom::fill(&mut seed)
         .map_err(|e| anyhow::anyhow!("SMS reference generation failed: {e}"))?;
     let parts = pdu::encode(&request.peer, &request.content, seed[0])?;
+    send_parts(modem, pool, path, request, parts, None).await
+}
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawSend {
+    pub request_id: String,
+    pub pdu: String,
+}
+pub async fn send_raw(
+    modem: Modem,
+    pool: PortPool,
+    path: PathBuf,
+    request: RawSend,
+) -> Result<Value> {
+    ensure!(
+        !request.request_id.is_empty()
+            && request.request_id.len() <= 64
+            && request
+                .request_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+        "invalid request_id"
+    );
+    let decoded = pdu::decode(&request.pdu)?;
+    ensure!(decoded.direction == "sent", "raw PDU must be SMS-SUBMIT");
+    let bytes = pdu::unhex(&request.pdu)?;
+    let tpdu_length = bytes
+        .len()
+        .checked_sub(1 + bytes[0] as usize)
+        .context("invalid SMSC length")?;
+    ensure!(tpdu_length <= 176, "SMS-SUBMIT exceeds TPDU limit");
+    let canonical = pdu::hex(&bytes);
+    let hash = crate::auth::digest(&canonical);
+    let input = Send {
+        request_id: request.request_id,
+        peer: decoded.peer,
+        content: if decoded.binary.is_some() {
+            "[binary SMS]".into()
+        } else {
+            decoded.content
+        },
+    };
+    let part = pdu::Encoded {
+        pdu: canonical,
+        tpdu_length,
+        part: 1,
+        total: 1,
+        encoding: "raw",
+    };
+    send_parts(modem, pool, path, input, vec![part], Some(hash)).await
+}
+async fn send_parts(
+    modem: Modem,
+    pool: PortPool,
+    path: PathBuf,
+    request: Send,
+    parts: Vec<pdu::Encoded>,
+    fingerprint: Option<String>,
+) -> Result<Value> {
     let part_count = parts.len();
     // The owned task persists its outcome even when an HTTP client leaves.
     tokio::spawn(async move {
-  let cfg=modem.clone();let data=request.clone();let (id,fresh)=database::run(path.clone(),move|db|database::begin_send(db,&cfg.id,&data.request_id,&data.peer,&data.content)).await?;
+  let cfg=modem.clone();let data=request.clone();let hash=fingerprint.clone();let (id,fresh)=database::run(path.clone(),move|db|database::begin_payload_send(db,&cfg.id,&data.request_id,&data.peer,&data.content,hash.as_deref())).await?;
   if fresh {
    let attempt=async {
     let port=pool.get(modem.sms_at_port.as_deref().unwrap_or(&modem.at_port)).await?;
@@ -140,7 +201,8 @@ pub async fn send(modem: Modem, pool: PortPool, path: PathBuf, request: Send) ->
     let submitted=replies.iter().filter_map(|r|r.response.lines().find_map(|l|l.trim().strip_prefix("+CMGS:")).map(str::trim)).collect::<Vec<_>>();
     Ok::<_,anyhow::Error>((replies.iter().all(|r|r.modem_success) && submitted.len()==part_count,json!({"submitted_parts":submitted.len(),"references":submitted})))
    }.await;
-   let (outcome,details)=match attempt {Ok((true,details))=>("submitted",details),Ok((false,details))=>("failed",details),Err(_)=>("unknown",json!({"reason":"Transport failed; submission may have reached the modem. Do not automatically resend."}))};
+   let (outcome,mut details)=match attempt {Ok((true,details))=>("submitted",details),Ok((false,details))=>("failed",details),Err(_)=>("unknown",json!({"reason":"Transport failed; submission may have reached the modem. Do not automatically resend."}))};
+   details["payload_hash"]=json!(fingerprint);
    database::run(path.clone(),move|db|database::finish_send(db,id,outcome,&details)).await?;
   }
   database::run(path,move|db|Ok(database::get(db,&modem.id,id)?.expect("recorded send"))).await
@@ -305,6 +367,7 @@ pub struct Settings {
     pub mode: Mode,
     pub poll_interval_seconds: u64,
     pub memories: [String; 3],
+    pub forwarding: Vec<forward::Sink>,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -321,6 +384,7 @@ impl Default for Settings {
             mode: Mode::Manual,
             poll_interval_seconds: 30,
             memories: ["SM".into(), "SM".into(), "SM".into()],
+            forwarding: vec![],
         }
     }
 }
@@ -330,6 +394,12 @@ impl Settings {
             (5..=86400).contains(&self.poll_interval_seconds),
             "SMS poll interval must be 5 to 86400 seconds"
         );
+        ensure!(self.forwarding.len() <= 16, "at most 16 forwarding sinks");
+        let mut ids = std::collections::HashSet::new();
+        for sink in &self.forwarding {
+            sink.validate()?;
+            ensure!(ids.insert(&sink.id), "duplicate forwarding sink id");
+        }
         for memory in &self.memories {
             validate_memory(memory)?;
         }

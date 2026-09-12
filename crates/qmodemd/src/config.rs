@@ -137,6 +137,12 @@ pub struct Modem {
     pub sms: crate::sms::Settings,
     #[serde(default)]
     pub network: crate::network::Settings,
+    #[serde(default)]
+    pub monitor: crate::monitor::Settings,
+    #[serde(default)]
+    pub traffic: crate::monitor::TrafficSettings,
+    #[serde(default)]
+    pub startup: crate::lifecycle::Settings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +198,9 @@ impl Config {
             modem.bands.validate()?;
             modem.sms.validate()?;
             modem.network.validate()?;
+            modem.monitor.validate()?;
+            modem.traffic.validate()?;
+            modem.startup.validate(modem)?;
             if let Some(interface) = &modem.interface {
                 validate_interface(interface)?;
             }

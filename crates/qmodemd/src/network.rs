@@ -21,6 +21,7 @@ pub struct Settings {
     pub driver: Driver,
     pub control_port: Option<String>,
     pub logical_interface: Option<String>,
+    pub firewall_zone: String,
     pub pdp_type: Pdp,
     pub metric: u32,
     pub mtu: Option<u16>,
@@ -75,6 +76,7 @@ impl Default for Settings {
             driver: Driver::At,
             control_port: None,
             logical_interface: None,
+            firewall_zone: "wan".into(),
             pdp_type: Pdp::Ipv4v6,
             metric: 50,
             mtu: None,
@@ -97,6 +99,17 @@ fn safe_at_string(s: &str) -> bool {
 }
 impl Settings {
     pub fn validate(&self) -> Result<()> {
+        if !self.firewall_zone.is_empty() {
+            let zone = &self.firewall_zone;
+            ensure!(
+                !zone.is_empty()
+                    && zone.len() <= 32
+                    && zone
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+                "invalid firewall zone"
+            );
+        }
         if let Some(name) = &self.logical_interface {
             ensure!(
                 !name.is_empty()
@@ -355,6 +368,9 @@ pub fn plan(modem: &Modem, c: &Credentials) -> Result<Value> {
     let n = &modem.network;
     let name = interface_name(modem);
     let mut p = json!({"name":name,"proto":match n.driver{Driver::At=>if n.pdp_type==Pdp::Ipv6{"dhcpv6"}else{"dhcp"},Driver::Qmi=>"qmi",Driver::Mbim=>"mbim"},"metric":n.metric,"defaultroute":n.default_route,"peerdns":n.peer_dns,"dns":n.dns,"delegate":n.delegate});
+    if !n.firewall_zone.is_empty() {
+        p["zone"] = json!(n.firewall_zone);
+    }
     if let Some(mtu) = n.mtu {
         p["mtu"] = json!(mtu);
     }
@@ -470,7 +486,15 @@ impl Manager {
             slot
         };
         let c = credentials(&modem, slot);
-        let plan = plan(&modem, &c)?;
+        let object = format!("network.interface.{}", interface_name(&modem));
+        if operation == "status" {
+            return ubus(&object, "status", &json!({})).await;
+        }
+        let plan = if operation == "disconnect" {
+            json!({})
+        } else {
+            plan(&modem, &c)?
+        };
         if operation == "plan" {
             let mut plan = plan;
             for field in ["password", "pincode"] {
@@ -494,6 +518,7 @@ impl Manager {
                 "refusing to replace a static OpenWrt interface"
             );
         }
+        tracing::info!(modem_id=%modem.id,operation,"network operation started");
         self.states
             .lock()
             .await
@@ -515,10 +540,11 @@ impl Manager {
    }
    ubus("network","add_dynamic",&plan).await?;
    if modem.network.driver==Driver::At&&modem.network.pdp_type==Pdp::Ipv4v6{
-    ubus("network","add_dynamic",&json!({"name":format!("{}v6",interface_name(&modem)),"proto":"dhcpv6","device":modem.interface,"metric":modem.network.metric,"delegate":modem.network.delegate,"peerdns":modem.network.peer_dns,"dns":modem.network.dns})).await?;
+    ubus("network","add_dynamic",&json!({"name":format!("{}v6",interface_name(&modem)),"proto":"dhcpv6","zone":modem.network.firewall_zone,"defaultroute":modem.network.default_route,"device":modem.interface,"metric":modem.network.metric,"delegate":modem.network.delegate,"peerdns":modem.network.peer_dns,"dns":modem.network.dns})).await?;
    }
    Ok::<_,anyhow::Error>(json!({"state":"connecting","interface":interface_name(&modem),"ip_acquired":false}))
   }.await;
+        tracing::info!(modem_id=%modem.id,operation,success=result.is_ok(),"network operation finished");
         self.states.lock().await.insert(
             modem.id.clone(),
             match &result {
@@ -586,6 +612,16 @@ mod tests {
         assert_eq!(plan["proto"], "qmi");
         assert_eq!(plan["pdptype"], "ipv4v6");
         assert_eq!(plan["profile"], 1);
+        assert_eq!(plan["zone"], "wan");
+        m.network.firewall_zone.clear();
+        let reloaded: Settings = toml::from_str(&toml::to_string(&m.network).unwrap()).unwrap();
+        assert_eq!(reloaded.firewall_zone, "");
+        assert!(
+            super::plan(&m, &Credentials::default())
+                .unwrap()
+                .get("zone")
+                .is_none()
+        );
     }
     #[test]
     fn invalid_quoted_credentials_are_rejected() {

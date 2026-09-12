@@ -257,6 +257,9 @@ fn modem_config(device: &Device, model: String, profile: Value) -> Option<Modem>
         bands: Default::default(),
         sms: Default::default(),
         network: Default::default(),
+        monitor: Default::default(),
+        traffic: Default::default(),
+        startup: Default::default(),
     })
 }
 /// Native, bounded identification. Never resets an existing queue or transmits a write command.

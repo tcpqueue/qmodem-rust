@@ -137,6 +137,36 @@ pub fn finish_send(db: &Connection, id: i64, status: &str, details: &Value) -> R
     Ok(())
 }
 
+pub fn begin_payload_send(
+    db: &mut Connection,
+    modem: &str,
+    request: &str,
+    peer: &str,
+    text: &str,
+    fingerprint: Option<&str>,
+) -> Result<(i64, bool)> {
+    let tx = db.transaction()?;
+    let (id, fresh) = begin_send(&tx, modem, request, peer, text)?;
+    if fresh {
+        tx.execute(
+            "UPDATE messages SET metadata=? WHERE id=?",
+            params![json!({"payload_hash":fingerprint}).to_string(), id],
+        )?;
+    } else {
+        let metadata: String =
+            tx.query_row("SELECT metadata FROM messages WHERE id=?", [id], |r| {
+                r.get(0)
+            })?;
+        let metadata: Value = serde_json::from_str(&metadata)?;
+        ensure!(
+            metadata["payload_hash"].as_str() == fingerprint,
+            "request_id has already been used with a different SMS payload"
+        );
+    }
+    tx.commit()?;
+    Ok((id, fresh))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,6 +226,26 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+    #[test]
+    fn raw_payload_idempotency_checks_the_exact_tpdu() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = crate::storage::initialize(&dir.path().join("db")).unwrap();
+        let (id, fresh) =
+            begin_payload_send(&mut db, "m", "request", "10086", "hello", Some("pdu-a")).unwrap();
+        assert!(fresh);
+        assert_eq!(
+            begin_payload_send(&mut db, "m", "request", "10086", "hello", Some("pdu-a")).unwrap(),
+            (id, false)
+        );
+        assert!(
+            begin_payload_send(&mut db, "m", "request", "10086", "hello", Some("pdu-b")).is_err()
+        );
+        assert!(begin_payload_send(&mut db, "m", "request", "10086", "hello", None).is_err());
+        assert_eq!(
+            get(&db, "m", id).unwrap().unwrap()["metadata"]["payload_hash"],
+            "pdu-a"
         );
     }
 }
