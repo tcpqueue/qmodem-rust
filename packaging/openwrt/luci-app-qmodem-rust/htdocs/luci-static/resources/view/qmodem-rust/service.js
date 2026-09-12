@@ -6,10 +6,10 @@
 'require poll';
 
 var serviceName = 'qmodem-rust';
-var list = rpc.declare({ object: 'rc', method: 'list', expect: { '': {} } });
+var list = rpc.declare({ object: 'rc', method: 'list', params: ['name'], expect: { '': {} } });
 var control = rpc.declare({ object: 'rc', method: 'init', params: ['name', 'action'] });
 var procd = rpc.declare({ object: 'service', method: 'list', params: ['name'], expect: { '': {} } });
-function statusData() { return Promise.all([list(), procd(serviceName)]); }
+function statusData() { return Promise.all([list(serviceName), procd(serviceName)]); }
 function execute(args) {
     return fs.exec('/usr/sbin/qmodemd', ['--config', '/etc/qmodem-rust.toml'].concat(args)).then(function(result) {
         if (result.code !== 0) throw new Error(result.stderr || _('Command failed'));
@@ -35,6 +35,12 @@ return view.extend({
     render: function(data) {
         var cfg = data[0], status = E('span'), authConfigured = cfg.auth_configured;
         var readonly = !L.hasViewPermission();
+        var dashboardHost = cfg.listen;
+        if (['0.0.0.0', '::', '127.0.0.1', '::1'].indexOf(dashboardHost) !== -1)
+            dashboardHost = window.location.hostname;
+        if (dashboardHost.indexOf(':') !== -1 && dashboardHost.charAt(0) !== '[')
+            dashboardHost = '[' + dashboardHost + ']';
+        var dashboardUrl = 'http://' + dashboardHost + ':' + cfg.port + '/';
         var listen = E('input', { 'id': 'qmr-listen', 'class': 'cbi-input-text', 'type': 'text', 'value': cfg.listen, 'disabled': readonly });
         var port = E('input', { 'id': 'qmr-port', 'class': 'cbi-input-text', 'type': 'number', 'min': '1', 'max': '65535', 'value': cfg.port, 'disabled': readonly });
         var choices = [['any', _('All network devices')]];
@@ -85,7 +91,9 @@ return view.extend({
         }) }, _('Initialize access token'));
         return E('div', { 'class': 'cbi-map' }, [
             E('h2', {}, 'QModem Rust'),
-            E('p', {}, _('Service configuration. The standalone modem dashboard is under development.')),
+            E('p', {}, _('Manage service settings here. Open the dashboard for modem features.')),
+            E('p', {}, E('a', { 'class': 'cbi-button cbi-button-action', 'href': dashboardUrl,
+                'target': '_blank', 'rel': 'noopener noreferrer' }, _('Open modem dashboard'))),
             E('div', { 'class': 'cbi-section' }, [
                 E('h3', {}, _('Service status')), E('p', {}, status),
                 E('div', { 'style': 'display:flex;gap:8px;flex-wrap:wrap' }, [

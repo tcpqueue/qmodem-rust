@@ -135,3 +135,9 @@ msgstr "详细跟踪"
 
 msgid "Warning"
 msgstr "警告"
+
+msgid "Manage service settings here. Open the dashboard for modem features."
+msgstr "在此管理服务设置，模组功能请进入独立管理后台。"
+
+msgid "Open modem dashboard"
+msgstr "打开模组管理后台"
