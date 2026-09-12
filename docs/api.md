@@ -152,3 +152,33 @@ All endpoints below require the same bearer token.
 - `GET|PUT /api/v1/modems/{id}/sms/config`: mode `manual|poll|urc|sim_only`,
   `poll_interval_seconds`, three `memories` entries. URC mode requires the original
   model and firmware rule; mismatch remains degraded, without inventing CNMI commands.
+
+## 初始化、维护和调试
+
+| 方法 | 路径（省略 /api/v1/modems/{id}） | 用途 |
+| --- | --- | --- |
+| GET/PUT | /startup | 初始化延迟、AT 列表、锁小区恢复、GPIO/LED、关机重启 |
+| PUT | /cell-lock | lock 为锁定参数或 null；persist 指定是否保存开机恢复 |
+| POST | /reboot | GPIO 复位；未配置 GPIO 时软重启 |
+| GET | /hardware | LED 列表和重启能力 |
+| GET/PUT | /maintenance | monitor、traffic：连通性检查、恢复动作、流量采样与清零 |
+| GET | /traffic/history | 最近 1000 条计数，带 source；来源变更不可直接计算速率 |
+| GET | /debug/config?lang=zh | 厂商/平台快捷 AT 与主 AT/SMS 端口 |
+| GET/DELETE | /logs | 此模组当前进程日志缓存；删除不清除 OpenWrt 系统日志 |
+| POST | /sms/send-pdu | request_id、pdu：包含 SMSC 字段的 SMS-SUBMIT 十六进制 |
+| POST | /sms/import | source、document：原项目 sent/received JSON，重复导入跳过 |
+| GET | /sms/deliveries | 持久转发记录和重试状态 |
+| POST | /sms/deliveries/{delivery}/retry | 重试已失败任务 |
+
+原始 AT 请求可带 port: primary 或 sms，默认为主 AT；不能指定任意系统路径。
+短信转发配置位于 sms.forwarding，由 /sms/config 或模组配置保存。
+目标改动或停用时取消尚未完成的旧任务。支持的转发类型为
+telegram、webhook、serverchan、pushdeer、feishu、custom；令牌字段仅通过已认证配置接口访问。
+后台网络请求不自动跟随重定向。HTTP 接收端是否处理 Idempotency-Key 去重取决于接收方。
+
+流量清零配置位于 traffic.reset：enabled、kind（daily/weekly/monthly）、hour、day。
+每周 day=0 为周日，每月使用 1–31，短月不存在的日期跳过。
+在配置小时内补执行一次，通过 SQLite 记录避免服务重启后重复清零。
+
+network.firewall_zone 默认 wan；空字符串表示不加入区域，必须使用已存在的区域。
+/network 的状态返回来自 netifd，不能把“拨号命令成功”当作已获取 IP。

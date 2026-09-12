@@ -1,44 +1,38 @@
-# Migration progress
+# 迁移进度
 
-Target: OpenWrt 24.10 and later; Quectel and TD Tech MT5700 only.
-This log supplements the original inventory. Entries below are implementation progress,
-not a claim of complete migration or hardware compatibility.
+代码基线：5a3a308。适配 OpenWrt 24.10 及以后版本，仅移远与 TD Tech MT5700。
+接口核对见 migration-inventory.json。接口数量不代表总体完成比例。
 
-## Added after the initial audit
+## 已接入的业务
 
-- Native sysfs USB/PCIe inventory, driver/interface filtering, PCM exclusion, bounded ATI
-  probes, model query fallbacks and restricted option-driver registration.
-- Optional periodic device discovery and live TOML modem registration/configuration CRUD.
-- Idle-port close/reopen, closed-handle rejection and stream disconnect notification.
-  No automatic retry of potentially state-changing AT transactions.
-- Quectel neighbour queries, platform-specific cell lock/unlock and traffic-counter
-  query/save/reset. MT5700 explicitly reports unavailable modem counters.
-- Cached, coalesced native status transactions with conditional SIM/operator/ICCID/
-  serving-cell/CA queries; Quectel and MT5700 field decoding. Further fixture coverage
-  and legacy edge-case comparisons are still needed.
-- Native GSM7/UCS2 SMS encoding/decoding, concatenated SMS, SQLite schema v2,
-  idempotent sends, ordered multipart import, pagination/conversations/read/delete,
-  SIM storage listing and verified-index deletion, manual/poll/firmware-gated URC modes.
-  Delivery reports, forwarding, legacy import and extended PDU cases remain outstanding.
-- Native AT dialing for supported vendor branches plus netifd dynamic-interface plans
-  for DHCP/QMI/MBIM. SIM switching now includes redial and reports separate switch/
-  redial failure. MT5700 software-state writes occur before serial open, as upstream.
-- Embedded device discovery, modem status/settings, network settings, neighbour/lock,
-  traffic, SMS and AT-debug pages in addition to queue monitoring. Mobile navigation
-  remains accessible instead of hiding all page links.
+- 原生 sysfs 发现、型号识别、受限 option 驱动绑定、配置登记及失败重试。
+- AT/SMS 端口事务队列、空闲关闭重开、迟到响应隔离、事件与队列页面。
+- 厂商 SIM/IMEI/网络模式/锁频；移远邻区、锁小区与流量计数。
+- 条件状态查询与合并缓存；MT5700 温度按上游除以 10，已有 B024 实机回归响应。
+- 原生 GSM7/UCS2/PDU、长短信、SQLite 历史/会话、幂等发送、索引核对删除、轮询/固件限定 URC。
+- 六类转发目标，持久任务、领取令牌、重试上限、租约恢复、目标变更取消与旧历史导入隔离。
+- AT 拨号、USB netifd QMI/MBIM、动态防火墙区域、SIM 切换后的重拨。
+- 开机 AT/锁小区、GPIO 复位、SIM/网络 LED、关机重启、监听和日志设置。
+- 连通性监测与恢复动作，流量采样、保留策略、按本地日历定时清零及防重复记录。
+- 对应 WebUI 页面，原始 PDU、快捷 AT/端口选择、后台日志；LuCI 控制服务与基础设置。
+- 三种架构静态构建脚本、SDK 预构建二进制打包入口、Rust/前端依赖许可证。
 
-## Still required
+## 仍需完成
 
-- Complete network lifecycle validation, MHI-specific QMI/MBIM support, firewall4,
-  bridge passthrough and restoration, IPv6/DNS edge cases, GPIO/LED and 5G Ethernet.
-- Persistent boot initialization/cell locks, watchdog and traffic-history scheduling.
-- SMS delivery reports/forwarding/retry/legacy import, URC loss and long-message expiry.
-- Full original-function inventory reconciliation, OpenWrt SDK/cross builds and package
-  installation/ACL tests. Actual USB/PCIe device tests wait for user-provided hardware.
+- PCIe MHI QMI/MBIM、USB 关联槽位、拔插后闲置句柄与接口回收。
+- 桥接直通及端口恢复、管理地址、IPv6 前缀/DNS 边界、5G Ethernet 平台检测。
+- 更多厂商固件状态夹具，完整 PCC/SCC 带宽、SCS、速率及 AMBR 展示。
+- 短信 multipart 过期与迟到分段、SIM 身份隔离、URC 在模组重置后的恢复细节。
+- 自定义覆盖及禁用能力的完整对照；外部扩展与旧 API 的最终映射核对。
+- OpenWrt SDK 实际打包安装、LuCI ACL/procd、真实网络与短信操作验收。
 
-## Verification
+这些缺口属于剩余代码或集成工作，不能全部归为“等待实机测试”。
 
-77 Rust tests pass, including kernel PTY serial/SMS tests and SQLite persistence.
-Strict clippy passed before the latest UI-only additions. Embedded frontend build passes.
-Browser checked device-page navigation, nullable status and native AT responses using
-explicitly labelled PTY simulators. These checks are not real modem or router tests.
+## 已完成验证
+
+87 项 Rust 测试通过；严格 clippy、前端构建、TOML/HTTP/SQLite/SIGTERM 与四组服务测试通过。
+ARM64、x86_64、i686 musl 静态链接检查通过；x86_64 和 i686 可在 WSL 执行版本命令。
+浏览器验证初始化、维护、转发配置保存及模拟 AT 返回；预览仅连接明确标注的 PTY 模组。
+
+2026-09-12 经用户临时授权，对 COM34 的 MT5700M-CN V200R001C20B024 执行六条只读查询；
+均返回 OK，端口已释放。未执行实机短信读写、拨号、切卡、锁频或重启。

@@ -1,37 +1,37 @@
 {
   "audited_on": "2026-09-12",
   "upstream_commit": "86102c2a6f620264b6308bff29a92ecde6a2ea2f",
-  "rust_commit": "1191e0a",
+  "rust_commit": "5a3a308",
   "hardware_verified": false,
   "definition": "接口迁移核对表；不是总体完成百分比。一个接口的工作量不等，替代底层接口不等于业务迁移完成。",
   "counts": {
     "qmodem": {
-      "implemented": 13,
-      "replaced": 1,
-      "partial": 5,
-      "pending": 37
+      "implemented": 30,
+      "replaced": 5,
+      "partial": 21,
+      "pending": 0
     },
     "qmodem.sms": {
-      "implemented": 0,
-      "replaced": 0,
+      "implemented": 15,
+      "replaced": 2,
       "partial": 0,
-      "pending": 17
+      "pending": 0
     },
     "at-daemon": {
-      "implemented": 0,
+      "implemented": 1,
       "replaced": 6,
       "partial": 3,
-      "pending": 1
+      "pending": 0
     }
   },
   "entries": [
     {
       "namespace": "qmodem",
       "method": "base_info",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "GET /modems/{id}/status",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "核心字段与条件查询已实现，仍需更多移远固件温度/频率等回放夹具。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 490
@@ -40,10 +40,10 @@
     {
       "namespace": "qmodem",
       "method": "cell_info",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "GET /modems/{id}/status",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "LTE/NSA/SA/MT5700 字段已解析；部分带宽、聚合与制式细节待补齐。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 493
@@ -52,10 +52,10 @@
     {
       "namespace": "qmodem",
       "method": "clear_dial_log",
-      "status": "pending",
-      "rust": null,
+      "status": "replaced",
+      "rust": "GET/DELETE /modems/{id}/logs",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "按模组过滤有界内存日志，stderr 由 OpenWrt 收集；不再使用原拨号日志文件。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 496
@@ -64,10 +64,10 @@
     {
       "namespace": "qmodem",
       "method": "dial_status",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "POST /modems/{id}/network status",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "netifd 实际连接状态；MHI 等新增连接路径待实现。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 499
@@ -76,10 +76,10 @@
     {
       "namespace": "qmodem",
       "method": "get_dial_log",
-      "status": "pending",
-      "rust": null,
+      "status": "replaced",
+      "rust": "GET/DELETE /modems/{id}/logs",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "按模组过滤有界内存日志，stderr 由 OpenWrt 收集；不再使用原拨号日志文件。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 502
@@ -88,10 +88,10 @@
     {
       "namespace": "qmodem",
       "method": "modem_dial",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "POST /modems/{id}/network connect",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "原生 AT + netifd USB QMI/MBIM；MHI、桥接、5G Ethernet、前缀处理尚未完成。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 505
@@ -100,10 +100,10 @@
     {
       "namespace": "qmodem",
       "method": "modem_hang",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "POST /modems/{id}/network disconnect",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "原生 AT 和 netifd 动态接口断开；MHI/桥接清理仍待完善。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 508
@@ -112,10 +112,10 @@
     {
       "namespace": "qmodem",
       "method": "modem_redial",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "POST /modems/{id}/network redial",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "原生重拨闭环，平台网络分支仍有缺口。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 511
@@ -124,10 +124,10 @@
     {
       "namespace": "qmodem",
       "method": "delete_sms",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "DELETE /modems/{id}/sms/sim",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "删除前核对完整 PDU，避免复用索引误删。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 514
@@ -136,10 +136,10 @@
     {
       "namespace": "qmodem",
       "method": "clear_stats",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "actions clear_usage_stats",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "按移远平台清零；MT5700 保留不可用语义。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 518
@@ -148,10 +148,10 @@
     {
       "namespace": "qmodem",
       "method": "save_stats",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "actions write_usage_stats",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "按移远平台保存计数。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 521
@@ -160,10 +160,10 @@
     {
       "namespace": "qmodem",
       "method": "do_reboot",
-      "status": "partial",
-      "rust": "soft_reboot",
+      "status": "implemented",
+      "rust": "POST /modems/{id}/reboot",
       "scope": "supported_profiles",
-      "note": "仅软重启；GPIO 硬重启、能力查询及无 GPIO 时回退未迁移。",
+      "note": "GPIO 脉冲与无 GPIO 时软重启回退；关机重启由 procd 脚本调用原生 CLI。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 524
@@ -172,10 +172,10 @@
     {
       "namespace": "qmodem",
       "method": "get_at_cfg",
-      "status": "partial",
-      "rust": "原始 JSON 资料已保存",
+      "status": "implemented",
+      "rust": "GET /modems/{id}/debug/config",
       "scope": "supported_profiles",
-      "note": "没有可用端口/有效端口枚举及按语言、厂商平台筛选的 AT 快捷命令接口。",
+      "note": "按语言、厂商平台筛选原始快捷命令，主 AT/SMS 端口选择。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 528
@@ -196,10 +196,10 @@
     {
       "namespace": "qmodem",
       "method": "get_current_band",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "GET /modems/{id}/status",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "服务小区与聚合响应已读取，完整 PCC/SCC 结构及带宽转换未完成。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 534
@@ -208,10 +208,10 @@
     {
       "namespace": "qmodem",
       "method": "get_current_band_capabilities",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "GET /modems/{id}/capabilities",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "能力可查询，当前频段专用展示协议仍待完善。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 537
@@ -232,10 +232,10 @@
     {
       "namespace": "qmodem",
       "method": "get_dns",
-      "status": "pending",
-      "rust": null,
+      "status": "replaced",
+      "rust": "network status dns-server + network configuration",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "由 netifd 管理实际 DNS，自定义 DNS 持久化 TOML。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 543
@@ -292,10 +292,10 @@
     {
       "namespace": "qmodem",
       "method": "get_neighborcell",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "actions get_neighborcell",
       "scope": "quectel",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "移远平台邻区与锁定查询；MT5700 上游不支持。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 558
@@ -316,10 +316,10 @@
     {
       "namespace": "qmodem",
       "method": "get_reboot_caps",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "GET /modems/{id}/hardware",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "返回软重启、GPIO 配置与节点可用性。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 564
@@ -328,10 +328,10 @@
     {
       "namespace": "qmodem",
       "method": "get_stats",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "actions get_usage_stats",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "模组计数、SQLite 历史及平台 RX/TX 次序。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 567
@@ -340,10 +340,10 @@
     {
       "namespace": "qmodem",
       "method": "get_traffic_reset_schedule",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "GET /modems/{id}/maintenance",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "读取每日/每周/每月清零配置。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 570
@@ -352,10 +352,10 @@
     {
       "namespace": "qmodem",
       "method": "get_sms",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "GET /modems/{id}/sms/sim",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "原生 CMGL 与 PDU 解码，单条失败不丢失其他记录。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 573
@@ -364,10 +364,10 @@
     {
       "namespace": "qmodem",
       "method": "get_connect_status",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "POST /modems/{id}/network status",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "netifd 实际连接状态。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 576
@@ -376,10 +376,10 @@
     {
       "namespace": "qmodem",
       "method": "info",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "GET /modems/{id}/status",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "完整状态事务已实现，部分上游展示字段待核对。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 579
@@ -388,10 +388,10 @@
     {
       "namespace": "qmodem",
       "method": "network_info",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "GET /modems/{id}/status",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "网络和信号字段已实现，速率与 AMBR 仍有原始字段。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 582
@@ -400,10 +400,10 @@
     {
       "namespace": "qmodem",
       "method": "send_at",
-      "status": "partial",
-      "rust": "POST /api/v1/modems/{id}/at",
+      "status": "implemented",
+      "rust": "POST /modems/{id}/at",
       "scope": "supported_profiles",
-      "note": "主 AT 端口发送已实现；原调试界面的端口选择、快捷命令和完整控制台未迁移。",
+      "note": "原生队列，主 AT 或 SMS 端口选择。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 585
@@ -412,10 +412,10 @@
     {
       "namespace": "qmodem",
       "method": "send_raw_pdu",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "POST /modems/{id}/sms/send-pdu",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "SMS-SUBMIT 原生发送，精确载荷幂等校验与历史记录。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 589
@@ -424,10 +424,10 @@
     {
       "namespace": "qmodem",
       "method": "send_sms",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "POST /modems/{id}/sms/send",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "GSM7/UCS2、分段发送、SQLite 幂等状态。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 593
@@ -484,10 +484,10 @@
     {
       "namespace": "qmodem",
       "method": "set_neighborcell",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "PUT /modems/{id}/cell-lock",
       "scope": "quectel",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "平台锁小区/解锁，原生队列与开机持久化。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 613
@@ -508,10 +508,10 @@
     {
       "namespace": "qmodem",
       "method": "set_sms_storage",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "PUT /modems/{id}/sms/storage",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "CPMS 配置与容量查询。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 621
@@ -520,10 +520,10 @@
     {
       "namespace": "qmodem",
       "method": "set_traffic_reset_schedule",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "PUT /modems/{id}/maintenance",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "Rust 调度，SQLite 防重复，使用路由器本地时间。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 625
@@ -532,10 +532,10 @@
     {
       "namespace": "qmodem",
       "method": "sim_info",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "GET /modems/{id}/status",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "SIM 查询与 ICCID 回退已实现，更多固件场景待回放。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 632
@@ -544,10 +544,10 @@
     {
       "namespace": "qmodem",
       "method": "remove_modem",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "DELETE /modems/{id}/config",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "配置删除和后台任务更新已实现，接口/桥接/闲置端口回收仍待完善。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 635
@@ -556,10 +556,10 @@
     {
       "namespace": "qmodem",
       "method": "scan_pcie",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "GET /discovery, POST /discovery/{id}/probe",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "原生 sysfs、型号探测与重试已实现；PCIe 与关联 USB 槽位映射、热插拔生命周期仍待核对。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 638
@@ -568,10 +568,10 @@
     {
       "namespace": "qmodem",
       "method": "scan_usb",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "GET /discovery, POST /discovery/{id}/probe",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "原生 sysfs、型号探测与重试已实现；PCIe 与关联 USB 槽位映射、热插拔生命周期仍待核对。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 639
@@ -580,10 +580,10 @@
     {
       "namespace": "qmodem",
       "method": "scan_all",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "GET /discovery, POST /discovery/{id}/probe",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "原生 sysfs、型号探测与重试已实现；PCIe 与关联 USB 槽位映射、热插拔生命周期仍待核对。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 640
@@ -592,10 +592,10 @@
     {
       "namespace": "qmodem",
       "method": "get_pcie_devices",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "GET /discovery, POST /discovery/{id}/probe",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "原生 sysfs、型号探测与重试已实现；PCIe 与关联 USB 槽位映射、热插拔生命周期仍待核对。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 641
@@ -604,10 +604,10 @@
     {
       "namespace": "qmodem",
       "method": "get_usb_devices",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "GET /discovery, POST /discovery/{id}/probe",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "原生 sysfs、型号探测与重试已实现；PCIe 与关联 USB 槽位映射、热插拔生命周期仍待核对。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 642
@@ -616,10 +616,10 @@
     {
       "namespace": "qmodem",
       "method": "get_available_devices",
-      "status": "pending",
-      "rust": null,
+      "status": "partial",
+      "rust": "GET /discovery, POST /discovery/{id}/probe",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "原生 sysfs、型号探测与重试已实现；PCIe 与关联 USB 槽位映射、热插拔生命周期仍待核对。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 643
@@ -628,10 +628,10 @@
     {
       "namespace": "qmodem",
       "method": "get_leds",
-      "status": "pending",
-      "rust": null,
+      "status": "implemented",
+      "rust": "GET /modems/{id}/hardware",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "枚举 Linux LED，SIM READY 和 netifd up 状态驱动指示灯。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 644
@@ -652,10 +652,10 @@
     {
       "namespace": "qmodem",
       "method": "get_tty_ports",
-      "status": "pending",
-      "rust": null,
+      "status": "replaced",
+      "rust": "discovery.at_candidates/valid_at_ports, debug/config ports",
       "scope": "supported_profiles",
-      "note": "未提供等价业务路径；同名资料或通用串口支持不计为业务完成。",
+      "note": "按设备展示候选和有效端口，调试请求只选已配置端口。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 646
@@ -689,9 +689,9 @@
       "namespace": "qmodem",
       "method": "set_sim_slot",
       "status": "partial",
-      "rust": "set_sim_slot",
+      "rust": "actions set_sim_slot",
       "scope": "supported_profiles",
-      "note": "厂商 AT 切卡及回读已迁移；主 RPC 在切卡后调用 redial 并合并成功状态，当前无自动重拨。MT5700 离线端口打开失败时不会先写软件状态，和原无条件写状态顺序仍不同。",
+      "note": "厂商 AT/MT 软件状态异常已恢复，外层重拨接入；更多拨号路径待完成。",
       "upstream": {
         "path": "application/qmodem/files/usr/libexec/rpcd/qmodem",
         "line": 653
@@ -700,9 +700,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "status",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1361
@@ -711,9 +711,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "config_get",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1362
@@ -722,9 +722,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "configure",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1363
@@ -733,9 +733,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "sync",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1364
@@ -744,9 +744,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "sync_status",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1365
@@ -755,9 +755,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "list",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1366
@@ -766,9 +766,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "get",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1367
@@ -777,9 +777,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "send",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1368
@@ -788,9 +788,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "send_managed",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1369
@@ -799,9 +799,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "delete",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1370
@@ -810,9 +810,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "mark_read",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1371
@@ -821,9 +821,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "modem_list",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1372
@@ -832,9 +832,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "modem_delete",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1373
@@ -843,9 +843,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "storage_get",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1374
@@ -854,9 +854,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "storage_set",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "implemented",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "短信配置、同步、历史或收发路径已实现，硬件短信操作尚未测试。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1375
@@ -865,9 +865,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "delivery_claim",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "replaced",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "原生持久转发工作线程领取/完成任务，保留令牌、租约和重试语义，不再依赖外部转发脚本调用。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1376
@@ -876,9 +876,9 @@
     {
       "namespace": "qmodem.sms",
       "method": "delivery_complete",
-      "status": "pending",
-      "rust": null,
-      "note": "仅有 SQLite 初始表和 AT 提示符事务；该短信服务入口的业务流程未接入。",
+      "status": "replaced",
+      "rust": "/api/v1/modems/{id}/sms + sms/{database,forward,legacy}.rs",
+      "note": "原生持久转发工作线程领取/完成任务，保留令牌、租约和重试语义，不再依赖外部转发脚本调用。",
       "upstream": {
         "path": "application/qmodem_smsd/src/main.c",
         "line": 1377
@@ -920,9 +920,9 @@
     {
       "namespace": "at-daemon",
       "method": "close",
-      "status": "pending",
-      "rust": null,
-      "note": "缺少显式关闭/重新打开端口；当前缓存的断开或隔离端口需要服务重启。",
+      "status": "implemented",
+      "rust": "PortPool::close + queue close API",
+      "note": "仅空闲时关闭，拒绝中断运行事务，关闭后可重新打开。",
       "upstream": {
         "path": "application/ubus_at_daemon/src/main.c",
         "line": 541
@@ -993,6 +993,14 @@
         "path": "application/ubus_at_daemon/src/main.c",
         "line": 547
       }
+    }
+  ],
+  "hardware_checks": [
+    {
+      "model": "MT5700M-CN",
+      "firmware": "V200R001C20B024",
+      "scope": "COM34 read-only AT, ATI, CGMM, CPIN, CHIPTEMP, MONSC",
+      "report": "docs/mt5700-com34-test.md"
     }
   ]
 }
