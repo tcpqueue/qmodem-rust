@@ -30,9 +30,29 @@ pub struct Settings {
     pub default_route: bool,
     pub delegate: bool,
     pub modem_nat: bool,
+    pub tdtech_dial_mode: TdtechDialMode,
     pub credentials: Credentials,
     pub sim2: Option<Credentials>,
     pub pre_dial_commands: Vec<String>,
+}
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TdtechDialMode {
+    #[default]
+    Usb,
+    Ethernet,
+    Internal,
+    Ndis,
+}
+impl TdtechDialMode {
+    fn code(self) -> u8 {
+        match self {
+            Self::Internal => 0,
+            Self::Usb => 1,
+            Self::Ethernet => 2,
+            Self::Ndis => unreachable!(),
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -85,6 +105,7 @@ impl Default for Settings {
             default_route: true,
             delegate: true,
             modem_nat: true,
+            tdtech_dial_mode: TdtechDialMode::default(),
             credentials: Default::default(),
             sim2: None,
             pre_dial_commands: vec![],
@@ -214,6 +235,71 @@ fn credentials(modem: &Modem, slot: Option<u8>) -> Credentials {
     }
     c
 }
+fn connection_status(modem: &Modem, dump: &Value) -> Value {
+    let name = interface_name(modem);
+    let items = dump["interface"].as_array();
+    let mut result = items
+        .and_then(|rows| rows.iter().find(|v| v["interface"] == name))
+        .cloned()
+        .unwrap_or_else(
+            || json!({"state":"disconnected","up":false,"interface":name,"device":modem.interface}),
+        );
+    if modem.network.driver == Driver::At
+        && modem.network.pdp_type == Pdp::Ipv4v6
+        && let Some(v6) =
+            items.and_then(|rows| rows.iter().find(|v| v["interface"] == format!("{name}v6")))
+    {
+        result["ipv6_up"] = v6["up"].clone();
+        result["ipv6_pending"] = v6["pending"].clone();
+        for key in ["ipv6-address", "ipv6-prefix", "ipv6-prefix-assignment"] {
+            if let Some(values) = v6[key].as_array() {
+                let target = result
+                    .as_object_mut()
+                    .unwrap()
+                    .entry(key)
+                    .or_insert_with(|| json!([]));
+                if let Some(target) = target.as_array_mut() {
+                    for value in values {
+                        if !target.contains(value) {
+                            target.push(value.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+fn tdtech_status(replies: &[Reply]) -> Value {
+    let mut result = json!({"unavailable":[]});
+    for (reply, key) in
+        replies
+            .iter()
+            .zip(["autodial", "usb_mode", "data_sessions", "pdp_contexts"])
+    {
+        if !reply.modem_success {
+            result["unavailable"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(key));
+            continue;
+        }
+        let rows: Vec<_> = reply
+            .response
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && *l != "OK" && !l.starts_with("AT"))
+            .collect();
+        result[key] = match key {
+            "autodial" => rows.iter().find_map(|line| line.strip_prefix("^SETAUTODIAL:").or_else(|| line.strip_prefix("^SETAUTODAIL:")))
+                .map(vendor::cells::fields).map(|f| json!({"enabled": f.first().is_some_and(|s|s=="1"),"mode":f.get(1).and_then(|s|s.parse::<u8>().ok()),"protocol":f.get(2),"apn":f.get(3),"auth":f.get(6)})).unwrap_or(Value::Null),
+            "usb_mode" => json!(rows.first().and_then(|s|s.trim_start_matches("^SETMODE:").trim().parse::<u8>().ok())),
+            "pdp_contexts" => json!(rows.iter().filter_map(|line|line.strip_prefix("+CGDCONT:")).map(vendor::cells::fields).map(|f|json!({"cid":f.first().and_then(|s|s.parse::<u8>().ok()),"protocol":f.get(1),"apn":f.get(2)})).collect::<Vec<_>>()),
+            _ => json!(rows),
+        };
+    }
+    result
+}
 fn cmd(c: &str) -> Step {
     Step::command(c, Duration::from_secs(30)).expect("validated dial command")
 }
@@ -233,6 +319,36 @@ impl Dial {
             tail: VecDeque::new(),
             pin_attempted: false,
         }
+    }
+    fn autodial(&self) -> Result<Step> {
+        let c = &self.credentials;
+        ensure!(
+            c.apn.len() <= 99 && c.username.len() <= 31 && c.password.len() <= 31,
+            "MT5700 自动拨号的 APN 最长 99 字节，用户名和密码最长 31 字节"
+        );
+        let auth = match c.auth.as_str() {
+            "" | "none" => 0,
+            "pap" => 1,
+            "chap" => 2,
+            _ => anyhow::bail!("MT5700 自动拨号仅支持无认证、PAP 或 CHAP"),
+        };
+        let mut command = format!(
+            "AT^SETAUTODIAL=1,{},\"{}\"",
+            self.modem.network.tdtech_dial_mode.code(),
+            self.modem.network.pdp_type.at()
+        );
+        // Omitted optional credentials preserve the modem's existing APN profile.
+        if !c.apn.is_empty()
+            || !c.username.is_empty()
+            || !c.password.is_empty()
+            || !c.auth.is_empty()
+        {
+            command.push_str(&format!(
+                ",\"{}\",\"{}\",\"{}\",{auth}",
+                c.apn, c.username, c.password
+            ));
+        }
+        Step::command(&command, Duration::from_secs(30))
     }
     fn tail(&mut self, plmn: &str) {
         let pdp = self.modem.pdp_index;
@@ -281,6 +397,12 @@ impl Dial {
 }
 impl Program for Dial {
     fn next(&mut self, replies: &[Reply]) -> std::result::Result<Next, AtError> {
+        if self.stage >= 4 && replies.last().is_some_and(|r| !r.modem_success) {
+            return Err(AtError {
+                kind: ErrorKind::State,
+                message: "模组拒绝联网配置，已停止后续拨号，请检查 SIM、APN 和认证方式".into(),
+            });
+        }
         match self.stage {
             0 => {
                 self.stage = 1;
@@ -309,7 +431,18 @@ impl Program for Dial {
                 for c in &self.modem.network.pre_dial_commands {
                     self.tail.push_back(cmd(c));
                 }
-                self.tail.push_back(cmd("AT+COPS=0,0"));
+                if self.modem.manufacturer.eq_ignore_ascii_case("tdtech")
+                    && self.modem.network.tdtech_dial_mode != TdtechDialMode::Ndis
+                {
+                    let step = self.autodial().map_err(|e| AtError {
+                        kind: ErrorKind::State,
+                        message: e.to_string(),
+                    })?;
+                    self.tail.push_back(step);
+                    self.stage = 6;
+                } else {
+                    self.tail.push_back(cmd("AT+COPS=0,0"));
+                }
                 self.next(replies)
             }
             2 => {
@@ -479,7 +612,15 @@ impl Manager {
         let lock = self.lock(&modem.id).await;
         let _guard = lock.lock().await;
         ensure!(
-            ["connect", "disconnect", "redial", "status", "plan"].contains(&operation),
+            [
+                "connect",
+                "disconnect",
+                "redial",
+                "status",
+                "plan",
+                "modem_status"
+            ]
+            .contains(&operation),
             "unknown network operation"
         );
         self.operate_locked(modem, pool, runtime, operation).await
@@ -492,6 +633,31 @@ impl Manager {
         operation: &str,
     ) -> Result<Value> {
         let mut modem = modem;
+        if operation == "modem_status" {
+            ensure!(
+                vendor::family(&modem)? == Family::TdtechMt5700,
+                "此查询仅适用于 MT5700"
+            );
+            let steps = [
+                "AT^SETAUTODIAL?",
+                "AT^SETMODE?",
+                "AT^NDISSTATQRY?",
+                "AT+CGDCONT?",
+            ]
+            .iter()
+            .map(|c| cmd(c))
+            .collect();
+            let replies = pool
+                .get(&modem.at_port)
+                .await?
+                .run_named(
+                    Box::new(crate::at::Sequence::new(steps, true)),
+                    Some(modem.id.clone()),
+                    "network_modem_status",
+                )
+                .await?;
+            return Ok(tdtech_status(&replies));
+        }
         if ["connect", "redial", "plan", "status", "disconnect"].contains(&operation)
             && modem.network.driver == Driver::At
         {
@@ -558,8 +724,7 @@ impl Manager {
         let c = credentials(&modem, slot);
         if operation == "status" {
             let dump = ubus("network.interface", "dump", &json!({})).await?;
-            return Ok(dump["interface"].as_array().and_then(|items| items.iter().find(|v| v["interface"] == interface_name(&modem))).cloned()
-                .unwrap_or_else(|| json!({"state":"disconnected","up":false,"interface":interface_name(&modem),"device":modem.interface})));
+            return Ok(connection_status(&modem, &dump));
         }
         let plan = if operation == "disconnect" {
             json!({})
@@ -596,7 +761,7 @@ impl Manager {
     let down=ubus(&object,"down",&json!({})).await;
     if modem.network.driver==Driver::At && modem.network.pdp_type==Pdp::Ipv4v6 { let _=ubus(&format!("{object}v6"),"down",&json!({})).await; }
     if modem.network.driver==Driver::At{
-     let hang=if family==Family::Quectel{format!("AT+QNETDEVCTL={},2,1",modem.pdp_index)}else{format!("AT^NDISDUP={},0",modem.pdp_index)};
+     let hang=if family==Family::Quectel{format!("AT+QNETDEVCTL={},2,1",modem.pdp_index)}else{if modem.network.tdtech_dial_mode == TdtechDialMode::Ndis { format!("AT^NDISDUP={},0",modem.pdp_index) } else { "AT^SETAUTODIAL=0".into() }};
      let replies=pool.get(&modem.at_port).await?.run_named(Box::new(crate::at::Sequence::new(vec![cmd(&hang)],false)),Some(modem.id.clone()),"network_disconnect").await?;
      ensure!(replies.iter().all(|r|r.modem_success),"modem rejected disconnect");
     }
@@ -703,6 +868,7 @@ mod tests {
         m.manufacturer = "tdtech".into();
         m.model = "mt5700m-cn".into();
         m.pdp_index = 5;
+        m.network.tdtech_dial_mode = TdtechDialMode::Ndis;
         let mut dial = Dial::new(m, Credentials::default());
         dial.tail("0");
         assert_eq!(dial.tail.back().unwrap().bytes, b"AT^NDISDUP=5,1\r\n");
@@ -732,5 +898,105 @@ mod tests {
         assert!(resolve_data_interface(&mut m, sys).is_err());
         m.at_port = "/dev/unrelated".into();
         assert!(resolve_data_interface(&mut m, sys).is_err());
+    }
+}
+
+#[cfg(test)]
+mod mt5700_dial_tests {
+    use super::*;
+    fn modem(mode: TdtechDialMode) -> Modem {
+        let mut m:Modem=serde_json::from_value(json!({"id":"m1","name":"test","manufacturer":"tdtech","model":"mt5700m-cn","platform":"hisilicon","at_port":"/dev/test","interface":"wwan0","bus":"usb"})).unwrap();
+        m.network.tdtech_dial_mode = mode;
+        m
+    }
+    fn ok() -> Reply {
+        Reply {
+            status: 0,
+            terminal: "OK".into(),
+            modem_success: true,
+            response: "+CPIN: READY\r\nOK\r\n".into(),
+        }
+    }
+    #[test]
+    fn autodial_uses_one_apn_path_for_each_data_outlet() {
+        for (mode, n) in [
+            (TdtechDialMode::Internal, 0),
+            (TdtechDialMode::Usb, 1),
+            (TdtechDialMode::Ethernet, 2),
+        ] {
+            let mut dial = Dial::new(
+                modem(mode),
+                Credentials {
+                    apn: "internet".into(),
+                    username: "user".into(),
+                    password: "pass".into(),
+                    auth: "pap".into(),
+                    ..Default::default()
+                },
+            );
+            let mut replies = vec![];
+            let mut commands = vec![];
+            loop {
+                match dial.next(&replies).unwrap() {
+                    Next::Command(step) => {
+                        commands.push(String::from_utf8(step.bytes).unwrap());
+                        replies.push(ok());
+                    }
+                    Next::Finish => break,
+                    _ => panic!(),
+                }
+            }
+            assert_eq!(
+                commands,
+                vec![
+                    "AT+CPIN?\r\n".to_owned(),
+                    format!("AT^SETAUTODIAL=1,{n},\"IPV4V6\",\"internet\",\"user\",\"pass\",1\r\n")
+                ]
+            );
+        }
+    }
+    #[test]
+    fn blank_credentials_preserve_existing_apn_and_rejected_writes_stop_dial() {
+        let mut dial = Dial::new(modem(TdtechDialMode::Usb), Credentials::default());
+        assert_eq!(
+            dial.autodial().unwrap().bytes,
+            b"AT^SETAUTODIAL=1,1,\"IPV4V6\"\r\n"
+        );
+        dial.next(&[]).unwrap();
+        dial.next(&[ok()]).unwrap();
+        let mut rejected = ok();
+        rejected.modem_success = false;
+        assert!(dial.next(&[ok(), rejected]).is_err());
+        dial.credentials.auth = "both".into();
+        assert!(dial.autodial().is_err());
+    }
+    #[test]
+    fn modem_configuration_readout_omits_auth_secrets() {
+        let mut response = ok();
+        response.response="^SETAUTODIAL:1,1,\"IPV4V6\",\"internet\",\"private-user\",\"private-password\",1\r\nOK\r\n".into();
+        let value = tdtech_status(&[response]);
+        assert_eq!(value["autodial"]["mode"], 1);
+        assert_eq!(value["autodial"]["apn"], "internet");
+        assert!(!value.to_string().contains("private"));
+    }
+}
+
+#[cfg(test)]
+mod connection_status_tests {
+    use super::*;
+    #[test]
+    fn dual_stack_status_includes_only_its_own_ipv6_child() {
+        let modem:Modem=serde_json::from_value(json!({"id":"m1","name":"test","manufacturer":"quectel","platform":"qualcomm","at_port":"/dev/test","bus":"usb"})).unwrap();
+        let name = interface_name(&modem);
+        let dump = json!({"interface":[
+            {"interface":name,"up":true,"ipv4-address":[{"address":"192.0.2.2","mask":24}]},
+            {"interface":format!("{name}v6"),"up":true,"pending":false,"ipv6-address":[{"address":"2001:db8::2","mask":64}]},
+            {"interface":"unrelatedv6","up":true,"ipv6-address":[{"address":"2001:db8:1::2","mask":64}]}
+        ]});
+        let result = connection_status(&modem, &dump);
+        assert_eq!(result["up"], true);
+        assert_eq!(result["ipv6_up"], true);
+        assert_eq!(result["ipv6-address"].as_array().unwrap().len(), 1);
+        assert_eq!(result["ipv6-address"][0]["address"], "2001:db8::2");
     }
 }

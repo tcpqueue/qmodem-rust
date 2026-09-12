@@ -197,7 +197,7 @@ async fn send_parts(
   if fresh {
    let attempt=async {
     let port=pool.get(modem.sms_at_port.as_deref().unwrap_or(&modem.at_port)).await?;
-    let replies=port.run_named(Box::new(Submit::new(parts)),Some(modem.id.clone()),"sms_send").await?;
+    let replies=port.run_named(Box::new(Submit::new(parts, modem.manufacturer.eq_ignore_ascii_case("tdtech"))),Some(modem.id.clone()),"sms_send").await?;
     let submitted=replies.iter().filter_map(|r|r.response.lines().find_map(|l|l.trim().strip_prefix("+CMGS:")).map(str::trim)).collect::<Vec<_>>();
     Ok::<_,anyhow::Error>((replies.iter().all(|r|r.modem_success) && submitted.len()==part_count,json!({"submitted_parts":submitted.len(),"references":submitted})))
    }.await;
@@ -212,10 +212,20 @@ struct Submit {
     steps: std::collections::VecDeque<Step>,
 }
 impl Submit {
-    fn new(parts: Vec<pdu::Encoded>) -> Self {
+    fn new(parts: Vec<pdu::Encoded>, inline_pdu: bool) -> Self {
         let mut steps = std::collections::VecDeque::new();
         for part in parts {
             steps.push_back(command("AT+CMGF=0"));
+            if inline_pdu {
+                // MT5700 manual 9.14: header CR and PDU form one submission.
+                // B024 does not provide the standard interactive '>' prompt.
+                let mut step = command("AT");
+                step.bytes = format!("AT+CMGS={}\r{}", part.tpdu_length, part.pdu).into_bytes();
+                step.bytes.push(0x1a);
+                step.timeout = Duration::from_secs(120);
+                steps.push_back(step);
+                continue;
+            }
             let mut prompt = command(&format!("AT+CMGS={}", part.tpdu_length));
             prompt.flags = vec![
                 ">".into(),
@@ -262,7 +272,7 @@ mod tests {
     }
     #[test]
     fn submit_stops_before_payload_when_prompt_is_rejected() {
-        let mut program = Submit::new(pdu::encode("10086", "hello", 0).unwrap());
+        let mut program = Submit::new(pdu::encode("10086", "hello", 0).unwrap(), false);
         let mut replies = vec![];
         assert!(matches!(program.next(&replies).unwrap(), Next::Command(_)));
         replies.push(Reply {
@@ -525,5 +535,33 @@ impl Program for DeleteProgram {
         };
         self.stage += 1;
         Ok(Next::Command(step))
+    }
+}
+
+#[cfg(test)]
+mod tdtech_submit_tests {
+    use super::*;
+    #[test]
+    fn mt5700_sends_contiguous_header_and_pdu_without_waiting_for_prompt() {
+        let parts = pdu::encode("10086", "test", 0).unwrap();
+        let expected = format!("AT+CMGS={}\r{}\x1a", parts[0].tpdu_length, parts[0].pdu);
+        let mut program = Submit::new(parts, true);
+        let Next::Command(mode) = program.next(&[]).unwrap() else {
+            panic!()
+        };
+        assert_eq!(mode.bytes, b"AT+CMGF=0\r\n");
+        let ok = Reply {
+            status: 0,
+            terminal: "OK".into(),
+            modem_success: true,
+            response: "OK\r\n".into(),
+        };
+        let Next::Command(send) = program.next(std::slice::from_ref(&ok)).unwrap() else {
+            panic!()
+        };
+        assert_eq!(send.bytes, expected.as_bytes());
+        assert!(!send.flags.iter().any(|f| f == ">"));
+        assert_eq!(send.timeout, Duration::from_secs(120));
+        assert!(matches!(program.next(&[ok]).unwrap(), Next::Finish));
     }
 }

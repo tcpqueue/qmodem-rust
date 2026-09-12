@@ -22,6 +22,26 @@ const RESPONSE_LIMIT: usize = 256 * 1024;
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const QUIET: Duration = Duration::from_millis(100);
 
+// Expose only known verbs, never arguments or arbitrary command payloads.
+fn command_label(bytes: &[u8]) -> &'static str {
+    let text = String::from_utf8_lossy(bytes).to_ascii_uppercase();
+    let verb = text.trim().split(['=', '?', ';']).next().unwrap_or("");
+    match verb {
+        "AT" => "AT",
+        "AT+CPIN" => "AT+CPIN",
+        "AT+COPS" => "AT+COPS",
+        "AT+CGDCONT" => "AT+CGDCONT",
+        "AT^AUTHDATA" => "AT^AUTHDATA",
+        "AT^NDISDUP" => "AT^NDISDUP",
+        "AT^NDISSTATQRY" => "AT^NDISSTATQRY",
+        "AT^SETAUTODIAL" => "AT^SETAUTODIAL",
+        "AT+QNETDEVCTL" => "AT+QNETDEVCTL",
+        "AT+QCFG" => "AT+QCFG",
+        "AT+CMGS" => "AT+CMGS",
+        _ => "AT / payload",
+    }
+}
+
 #[derive(Clone)]
 pub struct Step {
     pub bytes: Vec<u8>,
@@ -275,10 +295,20 @@ async fn worker<T: AsyncRead + AsyncWrite + Unpin>(
 ) {
     let mut decoder = Decoder::default();
     let mut synchronized = true;
+    let mut pending_flags: Option<Vec<String>> = None;
+    let mut late_quiet: Option<Instant> = None;
     let mut idle = [0; 4096];
     loop {
         tokio::select! {
             biased;
+            _=tokio::time::sleep_until(late_quiet.unwrap_or_else(|| Instant::now()+Duration::from_secs(86400))), if late_quiet.is_some()=>{
+                decoder.clear();
+                pending_flags=None;
+                late_quiet=None;
+                synchronized=true;
+                monitor.phase("idle");
+                tracing::info!(target:"qmodemd::at","late terminal drained; serial transport synchronized");
+            },
             job=jobs.recv()=>{
                 let Some(mut job)=job else{break;};
                 let cancelled=job.reply.is_closed();
@@ -318,16 +348,23 @@ async fn worker<T: AsyncRead + AsyncWrite + Unpin>(
                         },
                         Next::Command(step)=>step,
                     };
-                    monitor.command();
+                    let label = command_label(&step.bytes);
+                    monitor.command(label);
                     match exchange(&mut stream,&mut decoder,&step,&events).await {
                         Ok(reply)=>{
                             replies.push(reply);
                         },
-                        Err(error)=>{
-                            tracing::warn!(target:"qmodemd::at",kind=?error.kind,"AT transaction failed");
+                        Err(mut error)=>{
+                            error.message = format!("{} ({label})", error.message);
+                            tracing::warn!(target:"qmodemd::at",kind=?error.kind,command=label,"AT transaction failed");
                             let recoverable=error.kind==ErrorKind::Timeout || error.kind==ErrorKind::Overflow;
+                            if recoverable && step.flags.iter().any(|f|f == ">") {
+                                // Cancel entry only before any SMS payload was submitted.
+                                // Never resend or cancel an uncertain submitted SMS.
+                                let _=tokio::time::timeout(QUIET,stream.write_all(&[0x1b])).await;
+                            }
                             // The caller gets its error promptly; queued transactions remain held.
-                            failed=Some((error,if recoverable{Some(step.flags)}else{None}));break;
+                            failed=Some((error,if recoverable{Some(default_flags())}else{None}));break;
                         }
                     }
                 }
@@ -335,7 +372,9 @@ async fn worker<T: AsyncRead + AsyncWrite + Unpin>(
                     monitor.finish(match error.kind {ErrorKind::Timeout=>"timeout",ErrorKind::Overflow=>"overflow",_=>"transport_error"},job.reply.is_closed());
                     monitor.phase("recovering");
                     let _=job.reply.send(Err(error));
-                    synchronized=if let Some(flags)=flags{recover(&mut stream,&mut decoder,&flags,&events).await}else{false};
+                    pending_flags=flags;
+                    synchronized=if let Some(flags)=pending_flags.as_ref(){recover(&mut stream,&mut decoder,flags,&events).await}else{false};
+                    if synchronized { pending_flags=None; }
                     monitor.phase(if synchronized{"idle"}else{"quarantined"});
                     if !synchronized {tracing::error!(target:"qmodemd::at","serial transport quarantined after unfinished transaction");}
                 }else if let Some(error)=program_error {
@@ -356,7 +395,16 @@ async fn worker<T: AsyncRead + AsyncWrite + Unpin>(
                         if decoder.push(&idle[..n]).is_err() {
                             decoder.clear();emit(&events,"overflow",String::new());
                         }
-                        while let Ok(Some(line))=decoder.next(&[]) {emit(&events,"unsolicited",line);}
+                        let mut got_terminal = false;
+                        while let Ok(Some(line))=decoder.next(&[]) {
+                            if pending_flags.as_ref().is_some_and(|flags| end_match(&line,flags).is_some()) {
+                                got_terminal=true;
+                            }
+                            emit(&events,if synchronized {"unsolicited"} else {"recovery"},line);
+                        }
+                        if got_terminal || late_quiet.is_some() {
+                            late_quiet=Some(Instant::now()+QUIET);
+                        }
                     }
                 }
             }
@@ -463,8 +511,8 @@ async fn recover<T: AsyncRead + AsyncWrite + Unpin>(
         };
         match timeout_at(until, stream.read(&mut buf)).await {
             Err(_) => {
-                decoder.clear();
                 if terminal {
+                    decoder.clear();
                     tracing::debug!(target:"qmodemd::at","late response drained; serial transport synchronized");
                 }
                 return terminal;

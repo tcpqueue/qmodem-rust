@@ -19,3 +19,24 @@ test('discovered Vue device can be copied into an independent editor', () => {
   assert.equal(device.network.auto_connect, false);
   assert.equal(copy.interface, null);
 });
+
+test('token survives reload and is removed on logout or invalid authentication', async () => {
+  const { savedToken, rememberToken } = await import('../src/browser-utils.ts');
+  const values=new Map();
+  const original=Object.getOwnPropertyDescriptor(globalThis,'sessionStorage');
+  Object.defineProperty(globalThis,'sessionStorage',{configurable:true,value:{getItem:key=>values.get(key)||null,setItem:(key,value)=>values.set(key,value),removeItem:key=>values.delete(key)}});
+  try {
+    assert.equal(savedToken(),'');
+    rememberToken('test-token');
+    const fresh=await import('../src/browser-utils.ts?reload');
+    assert.equal(fresh.savedToken(),'test-token');
+    fresh.rememberToken('');
+    assert.equal(savedToken(),'');
+    Object.defineProperty(globalThis,'sessionStorage',{configurable:true,get(){throw Error('blocked');}});
+    assert.equal(savedToken(),'');
+    assert.doesNotThrow(()=>rememberToken('test-token'));
+  } finally {
+    if(original)Object.defineProperty(globalThis,'sessionStorage',original);
+    else delete globalThis.sessionStorage;
+  }
+});

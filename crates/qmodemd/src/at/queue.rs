@@ -11,6 +11,7 @@ pub struct JobView {
     pub queued_ms: u64,
     pub elapsed_ms: Option<u64>,
     pub commands_started: usize,
+    pub last_command: Option<&'static str>,
     pub caller_detached: Option<bool>,
     pub outcome: Option<&'static str>,
 }
@@ -21,6 +22,7 @@ struct Entry {
     submitted: Instant,
     started: Option<Instant>,
     commands: usize,
+    last_command: Option<&'static str>,
 }
 impl Entry {
     fn view(&self) -> JobView {
@@ -35,6 +37,7 @@ impl Entry {
                 .as_millis() as u64,
             elapsed_ms: self.started.map(|s| s.elapsed().as_millis() as u64),
             commands_started: self.commands,
+            last_command: self.last_command,
             caller_detached: None,
             outcome: None,
         }
@@ -113,6 +116,7 @@ impl Monitor {
                     submitted: Instant::now(),
                     started: None,
                     commands: 0,
+                    last_command: None,
                 });
                 Ok(())
             }
@@ -152,11 +156,12 @@ impl Monitor {
     pub fn phase(&self, phase: &'static str) {
         self.lock().state = phase;
     }
-    pub fn command(&self) {
+    pub fn command(&self, label: &'static str) {
         let mut d = self.lock();
         d.state = "running";
         if let Some(e) = d.current.as_mut() {
             e.commands += 1;
+            e.last_command = Some(label);
         }
     }
     pub fn finish(&self, outcome: &'static str, detached: bool) {

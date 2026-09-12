@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   ElButton,
   ElInput,
@@ -27,6 +27,7 @@ import {
 } from "@element-plus/icons-vue";
 import type { Snapshot, Port, Modem } from "./types";
 import Devices from "./Devices.vue";
+import { savedToken, rememberToken } from "./browser-utils";
 const page = ref("queues");
 const pageTitle = computed(
   () =>
@@ -47,6 +48,13 @@ const detail = ref<{ modem: string; path: string } | null>(null);
 let timer: ReturnType<typeof setTimeout> | undefined,
   controller: AbortController | undefined;
 const operations: Record<string, string> = {
+  discovery: "识别设备",
+  discovery_model: "识别型号",
+  post_init: "初始化模组",
+  status: "读取运行状态",
+  network_connect: "连接网络",
+  network_modem_status: "读取模组联网配置",
+  network_disconnect: "断开网络",
   at: "AT 事务",
   raw_at: "AT 调试",
   get_imei: "读取 IMEI",
@@ -163,6 +171,7 @@ async function refresh() {
     });
     if (active.signal.aborted) return;
     if (response.status === 401) {
+      rememberToken("");
       token.value = "";
       connected.value = false;
       snapshot.value = null;
@@ -174,6 +183,7 @@ async function refresh() {
     if (active.signal.aborted) return;
     snapshot.value = body.data;
     connected.value = true;
+    rememberToken(token.value);
     error.value = "";
     updated.value = new Date();
   } catch (e) {
@@ -199,6 +209,7 @@ function login() {
   refresh();
 }
 function logout() {
+  rememberToken("");
   clearTimeout(timer);
   controller?.abort();
   token.value = "";
@@ -212,6 +223,10 @@ function visibility() {
   if (document.hidden) clearTimeout(timer);
   else if (token.value) refresh();
 }
+onMounted(() => {
+  token.value = savedToken();
+  if (token.value) refresh();
+});
 document.addEventListener("visibilitychange", visibility);
 onBeforeUnmount(() => {
   clearTimeout(timer);
@@ -316,7 +331,7 @@ function inspect(modem: Modem, port: Port) {
             :title="error"
             type="error"
             :closable="false"
-          /><small>令牌仅在当前页面内存中使用，关闭页面后清除。</small>
+          /><small>当前标签页会记住登录状态，刷新无需重输；退出登录或令牌失效后清除。</small>
         </section>
         <Devices
           v-else-if="page !== 'queues'"
@@ -541,9 +556,13 @@ function inspect(modem: Modem, port: Port) {
           }}</strong
           ><span v-if="selected.queue.current"
             >已执行 {{ duration(selected.queue.current.elapsed_ms) }} · 已发送
-            {{ selected.queue.current.commands_started }} 条命令</span
+            {{ selected.queue.current.commands_started }} 条命令 · {{ selected.queue.current.last_command || "—" }}</span
           >
         </div>
+        <ElAlert v-if="['quarantined', 'recovering'].includes(selected.queue.state)"
+          type="warning" :closable="false" show-icon
+          title="上一个命令未收到完整结束响应"
+          description="端口会继续接收迟到响应，确认同步后自动恢复。超时不代表模组没有执行，请先核实连接或短信状态，避免重复操作。" />
         <h3 class="section-title">
           等待队列
           <span
@@ -590,7 +609,7 @@ function inspect(modem: Modem, port: Port) {
               >{{ duration(row.queued_ms) }} /
               {{ duration(row.elapsed_ms) }}</template
             ></ElTableColumn
-          ><ElTableColumn label="结果" min-width="150"
+          ><ElTableColumn prop="last_command" label="最后命令" min-width="145" /><ElTableColumn label="结果" min-width="150"
             ><template #default="{ row }"
               ><ElTag
                 :type="

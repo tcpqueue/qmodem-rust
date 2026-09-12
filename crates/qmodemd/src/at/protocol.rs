@@ -14,6 +14,11 @@ pub fn end_match<'a>(line: &str, flags: &'a [String]) -> Option<&'a str> {
         .iter()
         .find(|flag| {
             line == flag.as_str()
+                || (matches!(flag.as_str(), "+CME ERROR:" | "+CMS ERROR:")
+                    && line.strip_prefix(flag.as_str()).is_some_and(|tail| {
+                        let tail = tail.trim();
+                        !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit())
+                    }))
                 || line
                     .strip_prefix(flag.as_str())
                     .is_some_and(|tail| tail.starts_with([' ', '\t']))
@@ -108,6 +113,8 @@ mod tests {
             "ERROR",
             "+CME ERROR: 10",
             "+CMS ERROR:",
+            "+CMS ERROR:500",
+            "+CME ERROR:10",
             "NO CARRIER",
             "OK extra",
         ] {
@@ -117,7 +124,7 @@ mod tests {
             "BROKEN",
             "NOT OK",
             "ERRORISH",
-            "+CME ERROR:10",
+            "+CME ERROR:10junk",
             "X+CMS ERROR: 1",
         ] {
             assert!(end_match(line, &flags).is_none(), "{line}");

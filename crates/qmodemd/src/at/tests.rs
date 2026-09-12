@@ -463,3 +463,79 @@ async fn solicited_notification_queries_and_unknown_lines_are_preserved() {
     assert!(replies[2].response.contains("^UNKNOWN: 7"));
     simulator.await.unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn quarantined_port_recovers_from_fragmented_late_terminal_without_replaying() {
+    let (client, mut modem) = duplex(4096);
+    let port = Port::start(client);
+    let saved = port.clone();
+    let first = tokio::spawn(async move {
+        saved
+            .execute(vec![
+                Step::command("AT", Duration::from_millis(20)).unwrap(),
+            ])
+            .await
+    });
+    let mut bytes = [0; 4];
+    modem.read_exact(&mut bytes).await.unwrap();
+    tokio::time::advance(Duration::from_millis(21)).await;
+    assert_eq!(first.await.unwrap().unwrap_err().kind, ErrorKind::Timeout);
+    modem.write_all(b"late\r\nO").await.unwrap();
+    tokio::task::yield_now().await;
+    tokio::time::advance(RECOVERY_TIMEOUT + Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(port.snapshot().state, "quarantined");
+    assert_eq!(
+        port.execute(vec![command("AT")]).await.unwrap_err().kind,
+        ErrorKind::Unsynchronized
+    );
+    modem.write_all(b"K\r\n+CMTI: \"SM\",1\r\n").await.unwrap();
+    tokio::task::yield_now().await;
+    tokio::time::advance(QUIET + Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(port.snapshot().state, "idle");
+    let saved = port.clone();
+    let second = tokio::spawn(async move { saved.execute(vec![command("AT2")]).await });
+    let mut bytes = [0; 5];
+    modem.read_exact(&mut bytes).await.unwrap();
+    assert_eq!(&bytes, b"AT2\r\n");
+    modem.write_all(b"fresh\r\nOK\r\n").await.unwrap();
+    let result = second.await.unwrap().unwrap();
+    assert_eq!(result[0].response, "fresh\r\nOK\r\n");
+}
+
+#[tokio::test(start_paused = true)]
+async fn late_sms_prompt_does_not_make_port_synchronized() {
+    let (client, mut modem) = duplex(4096);
+    let port = Port::start(client);
+    let saved = port.clone();
+    let first = tokio::spawn(async move {
+        let mut prompt = Step::command("AT+CMGS=4", Duration::from_millis(20)).unwrap();
+        prompt.flags = vec![">".into(), "ERROR".into(), "+CMS ERROR:".into()];
+        saved.execute(vec![prompt]).await
+    });
+    let mut bytes = [0; 11];
+    modem.read_exact(&mut bytes).await.unwrap();
+    tokio::time::advance(Duration::from_millis(21)).await;
+    assert_eq!(first.await.unwrap().unwrap_err().kind, ErrorKind::Timeout);
+    modem.write_all(b"\r\n> ").await.unwrap();
+    tokio::task::yield_now().await;
+    tokio::time::advance(RECOVERY_TIMEOUT + Duration::from_millis(1)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(port.snapshot().state, "quarantined");
+    assert_eq!(
+        port.execute(vec![command("AT")]).await.unwrap_err().kind,
+        ErrorKind::Unsynchronized
+    );
+}
+
+#[test]
+fn command_metadata_never_contains_arguments_or_arbitrary_verbs() {
+    assert_eq!(command_label(b"AT+CPIN=\"1234\"\r\n"), "AT+CPIN");
+    assert_eq!(
+        command_label(b"AT^SETAUTODIAL=1,1,\"IP\",\"secret\"\r\n"),
+        "AT^SETAUTODIAL"
+    );
+    assert_eq!(command_label(b"AT+SECRET=private\r\n"), "AT / payload");
+    assert_eq!(command_label(b"private SMS body\x1a"), "AT / payload");
+}

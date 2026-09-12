@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
+import BalongNetwork from "./BalongNetwork.vue";
 import {
   ElButton,
   ElInput,
@@ -20,8 +21,11 @@ const config = ref<any>(null),
   error = ref(""),
   notice = ref(""),
   result = ref<any>(null),
+  modemState = ref<any>(null),
   dns = ref(""),
   hooks = ref("");
+const isBalong = computed(() => config.value?.manufacturer === "tdtech");
+const usesAutodial = computed(() => isBalong.value && config.value?.network.tdtech_dial_mode !== "ndis");
 async function api(path: string, method = "GET", data?: unknown) {
   const r = await fetch(`/api/v1/modems/${props.modem}/${path}`, {
     method,
@@ -51,6 +55,7 @@ async function run(fn: () => Promise<void>) {
 }
 async function load() {
   config.value = await api("config");
+  if (isBalong.value) config.value.network.tdtech_dial_mode ||= "usb";
   if (!config.value.interface && config.value.network.driver === "at") {
     try {
       const plan = await api("network", "POST", { operation: "plan" });
@@ -82,9 +87,12 @@ async function operate(operation: string) {
       confirmButtonText: "执行",
       cancelButtonText: "取消",
     });
+  if (["connect", "redial"].includes(operation)) await save();
   result.value = await api("network", "POST", { operation });
+  if (operation === "connect") notice.value = "连接请求已完成，请读取连接状态确认是否获得地址。";
 }
-onMounted(() => run(async () => { await load(); await operate("status"); }));
+async function readModem() { modemState.value = await api("network", "POST", { operation: "modem_status" }); }
+onMounted(() => run(async () => { await load(); await operate("status"); if (isBalong.value) await readModem(); }));
 </script>
 <template>
   <ElAlert v-if="error && !config" :title="error" type="error" :closable="false" />
@@ -97,12 +105,21 @@ onMounted(() => run(async () => { await load(); await operate("status"); }));
     /><ElAlert v-if="notice" :title="notice" type="success" :closable="false" />
     <ElAlert v-if="result?.managed_by === 'openwrt'" type="info" :closable="false"
       :title="'当前网卡由 OpenWrt 接口 ' + result.interface + ' 管理：' + (result.up ? '已连接' : '未连接')" />
+    <div v-if="result && result.up !== undefined" class="connection-summary">
+      <strong>{{ result.up ? '路由器接口已连接' : result.pending ? '正在获取地址' : '路由器接口未连接' }}</strong>
+      <p>接口：{{ result.interface || '—' }} · 网卡：{{ result.l3_device || result.device || config.interface || '—' }}</p>
+      <p v-for="entry in result['ipv4-address'] || []" :key="entry.address">IPv4：{{ entry.address }}/{{ entry.mask }}</p>
+      <p v-if="result.ipv6_up !== undefined">IPv6 接口：{{ result.ipv6_up ? '已连接' : result.ipv6_pending ? '获取地址中' : '未连接' }}</p>
+      <p v-for="entry in result['ipv6-address'] || []" :key="entry.address">IPv6：{{ entry.address }}/{{ entry.mask }}</p>
+    </div>
+    <BalongNetwork v-if="isBalong" v-model="config.network.tdtech_dial_mode" :busy="busy" :state="modemState" @refresh="run(readModem)" />
+    <h3 v-else>移远 · 拨号与路由</h3>
     <div class="network-buttons">
       <ElButton
         type="primary"
         :loading="busy"
         @click="run(() => operate('connect'))"
-        >连接</ElButton
+        >保存并连接</ElButton
       ><ElButton :disabled="busy || result?.managed_by === 'openwrt'" @click="run(() => operate('redial'))"
         >重新拨号</ElButton
       ><ElButton :disabled="busy || result?.managed_by === 'openwrt'" @click="run(() => operate('disconnect'))"
@@ -115,7 +132,7 @@ onMounted(() => run(async () => { await load(); await operate("status"); }));
     <ElForm label-position="top" class="network-form">
       <ElFormItem label="自动联网"
         ><ElSwitch v-model="config.network.auto_connect" /></ElFormItem
-      ><ElFormItem label="拨号方式"
+      ><ElFormItem v-if="!isBalong || config.network.driver !== 'at'" label="拨号方式"
         ><ElSelect v-model="config.network.driver"
           ><ElOption
             value="at"
@@ -147,14 +164,14 @@ onMounted(() => run(async () => { await load(); await operate("status"); }));
             label="IPv6" /><ElOption
             value="ipv4v6"
             label="IPv4 + IPv6" /></ElSelect></ElFormItem
-      ><ElFormItem label="PDP 索引"
+      ><ElFormItem v-if="!usesAutodial" label="PDP 索引"
         ><ElInputNumber
           v-model="config.pdp_index"
           :min="1"
           :max="16" /></ElFormItem
       ><ElFormItem label="路由优先级 metric"
         ><ElInputNumber v-model="config.network.metric" :min="0" /></ElFormItem
-      ><ElFormItem label="模组 NAT"
+      ><ElFormItem v-if="!isBalong" label="模组 NAT"
         ><ElSwitch v-model="config.network.modem_nat" /></ElFormItem
       ><ElFormItem label="默认路由"
         ><ElSwitch v-model="config.network.default_route" /></ElFormItem
@@ -183,14 +200,14 @@ onMounted(() => run(async () => { await load(); await operate("status"); }));
           :type="['pin', 'password'].includes(key) ? 'password' : 'text'"
           :show-password="['pin', 'password'].includes(key)" /></ElFormItem
       ><ElFormItem label="认证方式"
-        ><ElSelect v-model="config.network.credentials.auth"
+        ><ElSelect v-model="config.network.credentials.auth" :empty-values="[null, undefined]"
           ><ElOption
             v-for="[key, label] in [
               ['', '默认'],
               ['none', '无认证'],
               ['pap', 'PAP'],
               ['chap', 'CHAP'],
-              ['both', 'PAP / CHAP'],
+              ...(!usesAutodial ? [['both', 'PAP / CHAP']] : []),
             ]"
             :key="key"
             :value="key"
@@ -226,9 +243,9 @@ onMounted(() => run(async () => { await load(); await operate("status"); }));
             ['pin', 'password'].includes(key) ? 'password' : 'text'
           " /></ElFormItem
       ><ElFormItem label="认证方式"
-        ><ElSelect v-model="config.network.sim2.auth"
+        ><ElSelect v-model="config.network.sim2.auth" :empty-values="[null, undefined]"
           ><ElOption
-            v-for="v in ['', 'none', 'pap', 'chap', 'both']"
+            v-for="v in usesAutodial ? ['', 'none', 'pap', 'chap'] : ['', 'none', 'pap', 'chap', 'both']"
             :key="v"
             :value="v"
             :label="v || '继承主卡'" /></ElSelect></ElFormItem
@@ -240,13 +257,15 @@ onMounted(() => run(async () => { await load(); await operate("status"); }));
         >查看生效参数</ElButton
       >
     </div>
-    <details v-if="result" open>
-      <summary>连接信息</summary>
+    <details v-if="result">
+      <summary>详细连接参数</summary>
       <pre>{{ JSON.stringify(result, null, 2) }}</pre>
     </details>
   </div>
 </template>
 <style scoped>
+.connection-summary { padding: 16px 20px; background: #eef8f2; border: 1px solid #c9e8d5; border-radius: 12px; margin: 16px 0; }
+.connection-summary p { margin: 6px 0; overflow-wrap: anywhere; }
 .network-buttons {
   display: flex;
   gap: 12px;

@@ -393,10 +393,10 @@ const metrics = [
           >
           <ElEmpty v-else description="点击刷新读取模组状态" />
         </ElTabPane>
-        <ElTabPane label="联网配置" name="network" lazy
+        <ElTabPane :label="current?.manufacturer === 'tdtech' ? '巴龙联网' : '移远联网'" name="network" lazy
           ><Network :key="selected" :token="token" :modem="selected"
         /></ElTabPane>
-        <ElTabPane label="模组设置" name="settings">
+        <ElTabPane :label="current?.manufacturer === 'tdtech' ? '巴龙设置' : '移远设置'" name="settings">
           <div class="settings-grid">
             <section>
               <h3>USB 工作模式</h3>

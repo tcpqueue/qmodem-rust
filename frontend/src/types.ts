@@ -5,6 +5,7 @@ export interface Job {
   queued_ms: number;
   elapsed_ms: number | null;
   commands_started: number;
+  last_command: string | null;
   caller_detached: boolean | null;
   outcome: string | null;
 }
