@@ -1,52 +1,67 @@
 # QModem Rust
 
-面向 OpenWrt 的独立模组管理服务。以 FUjr/QModem 的功能为迁移基线，目标架构为 Rust 后端、内嵌 art-design-pro 管理页面，以及轻量 LuCI 服务控制插件。
+面向 OpenWrt 的独立模组管理服务。将 QModem 的 Shell/C 后端业务逐步迁移为 Rust，使用内嵌的 art-design-pro 管理界面和轻量 LuCI 服务控制插件。
 
-**当前处于初始开发阶段，不能替代 QModem。** 已建立配置校验、HTTP 健康检查、SQLite 初始结构和 procd 启动脚本。厂商适配、拨号、短信业务、完整 Web 页面尚未完成，LuCI 控制页已编写但尚未上机验证。设备资料的保留不代表 Rust 驱动已经实现。
+适配范围：**移远系列、TD Tech MT5700**；目标设备：ARM64 和 x86 系列，包含 USB 与 PCIe。其他厂商不在本次适配范围内。
 
-## 部署目标
+**当前是开发版本，尚不能完整替代 QModem。** 已有原生串口调度、首批厂商操作、HTTP API、鉴权、TOML 设置、日志等级、网卡绑定和 SQLite 初始结构。完整后台、拨号、短信业务、锁频锁小区及部分适配仍在迁移，见 [功能清单](docs/parity.md)。
 
-- ARM64 和 x86 系列路由器；先构建 aarch64、x86_64，32 位 x86 单独验证。
-- 保留上游 USB、PCIe 模组及全部已有厂商的功能支持。
-- Rust 二进制内嵌 Web 静态资源，路由器无需 Node.js、Python 或 PHP。
-- 使用一个 TOML 文件管理服务和业务配置。
-- SQLite 保存短信、流量统计等运行数据，可自动生成数据库及 WAL 文件。
-- LuCI 负责启停、开机自启、基本设置和独立后台入口。
-- 按需复用 OpenWrt 内核驱动、netifd、ubus、QMI/MBIM 等系统设施。
+## 当前功能
 
-## 本地验证
+- Rust 直接操作串口，不调用原 QModem Shell/C 服务；同端口串行、不同端口并发。
+- 命令分段响应、终止符、短信提示符/PDU事务、超时后迟到响应恢复与事件流。
+- `/api/v1` 提供模组配置列表、原始 AT、首批结构化操作和串口 SSE 事件。
+- TOML 保存配置，原子更新保留其他字段与注释；SQLite 保存后续运行数据。
+- 日志等级支持 error、warn、info、debug、trace、off；格式支持文本或 JSON。
+- 可配置监听 IP、端口及 Linux 网络设备，通过 SO_BINDTODEVICE 限定网卡。
+- LuCI 已编写启停、自启、访问令牌初始化、日志和监听设置页面，含简体中文翻译；尚未实机联调。
 
-在 Linux 原生目录或 WSL 的 `~/projects/` 下执行：
+## WSL / Linux 开发
+
+项目在 Linux 原生目录构建，例如 `~/projects/qmodem-rust-daemon`，不在 `/mnt/` 中执行开发操作。当前验证工具链为 Rust 1.98.1。
 
 ```sh
 git submodule update --init
 cargo test --workspace
-cargo run -- --config config/qmodem.example.toml check
-cargo run -- --config config/qmodem.example.toml service-info
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace
+./scripts/smoke.sh
+./scripts/test-service.sh
 ```
 
-运行健康检查服务前，复制示例配置并将 `storage.sqlite` 改成当前用户可写的**绝对路径**，再执行：
+最后一项需要 Linux 的 `unshare`、`ip` 和 Node.js，验证使用临时网络命名空间。Node.js 只用于开发测试，路由器运行时不需要。
+
+## 配置与运行
+
+复制 `config/qmodem.example.toml` 为 `config/local.toml`，将 `storage.sqlite` 改成当前用户可写的绝对路径，然后运行：
 
 ```sh
+cargo run -- --config config/local.toml check
+cargo run -- --config config/local.toml init-auth
 cargo run -- --config config/local.toml serve
-curl http://127.0.0.1:8088/api/health
 ```
 
-初始版本仅开放回环地址上的健康检查；管理认证完成后再开放局域网管理接口。`check` 不创建数据库，也不操作模组。
+首次生成的令牌只显示一次，TOML 保存哈希。非回环监听必须先配置认证。监听和日志设置修改后重启服务生效。
 
-## 目录
+```toml
+[server]
+listen = "0.0.0.0"
+port = 8088
+interface = "br-lan"
 
-| 路径 | 用途 |
-| --- | --- |
-| `crates/qmodemd` | Rust 服务 |
-| `config` | TOML 配置示例 |
-| `data` | 从固定上游版本保留的模组识别资料和 AT 快捷命令 |
-| `web` | art-design-pro 前端源码基线 |
-| `packaging/openwrt` | OpenWrt 服务与 LuCI 集成 |
-| `docs/architecture.md` | 架构与配置边界 |
-| `docs/parity.md` | 迁移与验收清单 |
-| `docs/upstream.md` | 上游版本和许可 |
+[logging]
+level = "info"
+format = "text"
+```
 
-## 许可
+完整说明见 [服务设置](docs/service-settings.md) 与 [API 文档](docs/api.md)。
 
-新编写的 Rust 服务与 LuCI 控制代码使用 MIT。上游 QModem 数据和 art-design-pro 保留各自许可，范围与原文见 [NOTICE.md](NOTICE.md)，不能将整个仓库的第三方资料统称为 MIT。
+## 部署形态
+
+最终业务程序由一个内嵌 Web 资源的二进制和一个 TOML 文件部署。SQLite、WAL、日志及 LuCI/procd 集成文件是允许的运行数据和系统集成文件。按需要复用 OpenWrt 内核驱动、netifd、ubus 等系统能力。
+
+`web/` 当前为 art-design-pro 上游源码子模块，尚未把示例页面当成可用业务后台。OpenWrt 构建规则见 `packaging/openwrt`，SDK 编译和实际安装待验证。
+
+## 上游与许可
+
+版本来源见 [upstream.md](docs/upstream.md)，第三方许可范围见 [NOTICE.md](NOTICE.md)。上游资料保留原始版权声明，不将第三方组件重新标成统一的宽松许可。

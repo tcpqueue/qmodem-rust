@@ -1,0 +1,137 @@
+msgid ""
+msgstr ""
+"Language: zh_Hans\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "Access token"
+msgstr "访问令牌"
+
+msgid "All network devices"
+msgstr "不限网络接口"
+
+msgid "Autostart disabled"
+msgstr "未启用开机自启"
+
+msgid "Autostart enabled"
+msgstr "已启用开机自启"
+
+msgid "Bind incoming connections to this Linux network device, for example br-lan. An unavailable device prevents startup."
+msgstr "将连接限定在指定的 Linux 网络接口，例如 br-lan。接口不存在时服务不会启动。"
+
+msgid "Close"
+msgstr "关闭"
+
+msgid "Command failed"
+msgstr "命令执行失败"
+
+msgid "Configured"
+msgstr "已配置"
+
+msgid "Currently unavailable"
+msgstr "当前不可用"
+
+msgid "Debug"
+msgstr "调试"
+
+msgid "Disable autostart"
+msgstr "关闭开机自启"
+
+msgid "Enable autostart"
+msgstr "启用开机自启"
+
+msgid "Error"
+msgstr "错误"
+
+msgid "IPv4 or IPv6 address. Use 0.0.0.0 or :: for all addresses on the selected device."
+msgstr "填写 IPv4 或 IPv6 地址。0.0.0.0 或 :: 表示所选网络接口上的所有对应协议地址。"
+
+msgid "Information"
+msgstr "信息"
+
+msgid "Information is recommended. Debug and trace include timings and internal state, without tokens, SMS content or complete AT payloads."
+msgstr "日常使用建议选择“信息”。调试和详细跟踪记录耗时及内部状态，不记录令牌、短信正文或完整 AT 收发内容。"
+
+msgid "Initialize access token"
+msgstr "初始化访问令牌"
+
+msgid "Listen address"
+msgstr "监听地址"
+
+msgid "Listener"
+msgstr "监听设置"
+
+msgid "Log format"
+msgstr "日志格式"
+
+msgid "Logging"
+msgstr "日志设置"
+
+msgid "Logs go to the OpenWrt system log through procd."
+msgstr "日志由 procd 收集到 OpenWrt 系统日志。"
+
+msgid "Minimum log level"
+msgstr "日志等级"
+
+msgid "Network device"
+msgstr "监听网络接口"
+
+msgid "Not configured"
+msgstr "未配置"
+
+msgid "Off"
+msgstr "关闭"
+
+msgid "Port"
+msgstr "监听端口"
+
+msgid "Port must be between 1 and 65535"
+msgstr "端口必须为 1 至 65535 之间的整数"
+
+msgid "Restart"
+msgstr "重启"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Save this token now. It is shown only once. The server stores its hash. Restart the service after saving settings."
+msgstr "请保存此令牌，关闭窗口后不再显示。服务端仅保存令牌哈希。保存配置后请重启服务。"
+
+msgid "Saved. Restart the service to apply the settings."
+msgstr "设置已保存，请重启服务使其生效。"
+
+msgid "Service action failed"
+msgstr "服务操作失败"
+
+msgid "Service configuration. The standalone modem dashboard is under development."
+msgstr "管理服务与基本配置。独立模组管理页面正在开发中。"
+
+msgid "Service status"
+msgstr "服务状态"
+
+msgid "Settings are saved to TOML and take effect after restarting the service."
+msgstr "设置保存到 TOML 配置文件，重启服务后生效。"
+
+msgid "Start"
+msgstr "启动"
+
+msgid "Status unavailable"
+msgstr "无法读取状态"
+
+msgid "Stop"
+msgstr "停止"
+
+msgid "Stopped"
+msgstr "已停止"
+
+msgid "Text"
+msgstr "文本"
+
+msgid "Trace"
+msgstr "详细跟踪"
+
+msgid "Warning"
+msgstr "警告"

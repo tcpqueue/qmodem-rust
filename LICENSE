@@ -3,7 +3,8 @@ MIT License
 Copyright (c) 2026 tcpqueue
 
 This license applies to the original Rust service, LuCI service-control code,
-and documentation in this repository. Imported QModem data and the
+and documentation in this repository, except files marked with another license.
+Ported vendor behavior, imported QModem data and the
 art-design-pro submodule retain their respective licenses; see NOTICE.md.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy

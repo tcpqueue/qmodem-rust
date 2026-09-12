@@ -12,6 +12,8 @@ LuCI Next 的页面是 JavaScript；核心厂商适配是 Shell；短信和串�
 
 上游 `vendor/dynamic_load.json` 包含 `tdtech.sh`、`nk.sh` 映射，但此基线的 vendor 目录中缺少对应文件。迁移时单独记录这两个缺口，不能声称其已有完整上游实现。
 
+`data/supported-models.json` 从原数据库筛选移远及 MT5700M-CN，MT5700 规范为 tdtech，并记录原 huawei 归类。其他原始 JSON 仅作为核对资料，不代表本项目支持所有厂商。
+
 ## art-design-pro
 
 - 仓库：https://github.com/Daymychen/art-design-pro

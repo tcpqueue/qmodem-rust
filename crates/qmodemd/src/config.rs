@@ -9,6 +9,10 @@ pub struct Config {
     pub server: Server,
     pub storage: Storage,
     #[serde(default)]
+    pub logging: Logging,
+    #[serde(default)]
+    pub auth: Auth,
+    #[serde(default)]
     pub modems: Vec<Modem>,
 }
 
@@ -17,6 +21,66 @@ pub struct Config {
 pub struct Server {
     pub listen: IpAddr,
     pub port: u16,
+    /// Linux network device, e.g. br-lan. Empty means no device restriction.
+    #[serde(default)]
+    pub interface: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Logging {
+    pub level: LogLevel,
+    pub format: LogFormat,
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Off,
+    Error,
+    Warn,
+    #[default]
+    Info,
+    Debug,
+    Trace,
+}
+impl LogLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+}
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    #[default]
+    Text,
+    Json,
+}
+impl LogFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Json => "json",
+        }
+    }
+}
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Auth {
+    pub token_hash: String,
+}
+impl std::fmt::Debug for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Auth")
+            .field("configured", &!self.token_hash.is_empty())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +97,8 @@ pub struct Modem {
     #[serde(default = "enabled")]
     pub enabled: bool,
     pub manufacturer: String,
+    #[serde(default)]
+    pub model: String,
     pub platform: String,
     pub at_port: String,
     pub sms_at_port: Option<String>,
@@ -80,8 +146,21 @@ impl Config {
             Path::new(&self.storage.sqlite).is_absolute(),
             "SQLite path must be absolute"
         );
+
+        validate_interface(&self.server.interface)?;
+        ensure!(
+            self.auth.token_hash.is_empty()
+                || (self.auth.token_hash.len() == 64
+                    && self
+                        .auth
+                        .token_hash
+                        .bytes()
+                        .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))),
+            "auth.token_hash must be a lowercase SHA-256 hex digest"
+        );
         let mut ids = HashSet::new();
         for modem in &self.modems {
+            crate::vendor::family(modem)?;
             ensure!(
                 !modem.id.is_empty()
                     && modem.id.len() <= 64
@@ -138,7 +217,7 @@ mod tests {
     fn version_and_storage_are_validated() {
         assert!(Config::parse(&SAMPLE.replace("version = 1", "version = 2")).is_err());
         assert!(
-            Config::parse(&SAMPLE.replace("/var/lib/qmodem-rust/qmodem.sqlite3", "data.sqlite3"))
+            Config::parse(&SAMPLE.replace("/etc/qmodem-rust/data.sqlite3", "data.sqlite3"))
                 .is_err()
         );
     }
@@ -168,24 +247,39 @@ mod tests {
     }
 }
 
-/// Update the service fields without rewriting unrelated values or comments.
-/// A sidecar lock serializes CLI writers; rename makes reader snapshots atomic.
-pub fn set_service(path: &Path, listen: IpAddr, port: u16) -> Result<()> {
+pub fn validate_interface(name: &str) -> Result<()> {
+    ensure!(
+        name.is_empty()
+            || (name.len() < 16
+                && name != "."
+                && name != ".."
+                && name
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'))),
+        "invalid network device name (maximum 15 ASCII characters)"
+    );
+    Ok(())
+}
+
+/// A sidecar lock serializes writers. Atomic rename protects readers; comments and
+/// fields outside this patch stay intact. Callers must never build TOML from shell text.
+pub fn update(
+    path: &Path,
+    patch: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<()>,
+) -> Result<()> {
     use fs2::FileExt;
     use std::{fs::OpenOptions, io::Write, os::unix::fs::OpenOptionsExt};
-    let lock_path = path.with_extension("toml.lock");
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .open(lock_path)?;
+        .open(path.with_extension("toml.lock"))?;
     lock.lock_exclusive()?;
     let original = fs::read_to_string(path)?;
     let mut document = original.parse::<toml_edit::DocumentMut>()?;
-    document["server"]["listen"] = toml_edit::value(listen.to_string());
-    document["server"]["port"] = toml_edit::value(i64::from(port));
+    patch(&mut document)?;
     let updated = document.to_string();
     Config::parse(&updated)?;
     let directory = path
@@ -203,6 +297,35 @@ pub fn set_service(path: &Path, listen: IpAddr, port: u16) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Default)]
+pub struct ServicePatch {
+    pub listen: Option<IpAddr>,
+    pub port: Option<u16>,
+    pub interface: Option<String>,
+    pub log_level: Option<LogLevel>,
+    pub log_format: Option<LogFormat>,
+}
+pub fn set_service(path: &Path, patch: ServicePatch) -> Result<()> {
+    update(path, |d| {
+        if let Some(listen) = patch.listen {
+            d["server"]["listen"] = toml_edit::value(listen.to_string());
+        }
+        if let Some(port) = patch.port {
+            d["server"]["port"] = toml_edit::value(i64::from(port));
+        }
+        if let Some(interface) = patch.interface {
+            d["server"]["interface"] = toml_edit::value(interface);
+        }
+        if let Some(level) = patch.log_level {
+            d["logging"]["level"] = toml_edit::value(level.as_str());
+        }
+        if let Some(format) = patch.log_format {
+            d["logging"]["format"] = toml_edit::value(format.as_str());
+        }
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod update_tests {
     use super::*;
@@ -212,13 +335,103 @@ mod update_tests {
         let path = dir.path().join("qmodem.toml");
         let original = include_str!("../../../config/qmodem.example.toml");
         fs::write(&path, original).unwrap();
-        set_service(&path, "::1".parse().unwrap(), 9999).unwrap();
+        set_service(
+            &path,
+            ServicePatch {
+                listen: Some("::1".parse().unwrap()),
+                port: Some(9999),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let updated = fs::read_to_string(&path).unwrap();
         assert!(updated.contains("# [[modems]]"));
         let config = Config::load(&path).unwrap();
         assert_eq!(config.server.port, 9999);
         assert!(config.server.listen.is_ipv6());
-        assert!(set_service(&path, "127.0.0.1".parse().unwrap(), 0).is_err());
+        assert!(
+            set_service(
+                &path,
+                ServicePatch {
+                    port: Some(0),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
         assert_eq!(fs::read_to_string(path).unwrap(), updated);
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    #[test]
+    fn interface_names_and_levels_are_strict() {
+        for name in ["br-lan", "eth0", "eth0.10", "lo", ""] {
+            validate_interface(name).unwrap();
+        }
+        for name in [
+            "../eth0",
+            "eth0\n",
+            "eth0;reboot",
+            "eth0 lo",
+            "0123456789012345",
+        ] {
+            assert!(validate_interface(name).is_err());
+        }
+        let sample = include_str!("../../../config/qmodem.example.toml");
+        assert!(Config::parse(&sample.replace("level = \"info\"", "level = \"verbose\"")).is_err());
+    }
+    #[test]
+    fn updates_keep_auth_and_comments_and_old_config_gets_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = format!(
+            "version=1\n[server]\nlisten='127.0.0.1'\nport=8088\n[storage]\nsqlite='/tmp/test.sqlite3'\n# preserve this\n[auth]\ntoken_hash='{}'\n",
+            "a".repeat(64)
+        );
+        fs::write(&path, &original).unwrap();
+        assert_eq!(Config::load(&path).unwrap().logging.level, LogLevel::Info);
+        set_service(
+            &path,
+            ServicePatch {
+                interface: Some("br-lan".into()),
+                log_level: Some(LogLevel::Trace),
+                log_format: Some(LogFormat::Json),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let cfg = Config::load(&path).unwrap();
+        assert_eq!(cfg.logging.level, LogLevel::Trace);
+        assert_eq!(cfg.server.interface, "br-lan");
+        assert_eq!(cfg.auth.token_hash, "a".repeat(64));
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("# preserve this")
+        );
+        let before = fs::read_to_string(&path).unwrap();
+        assert!(
+            set_service(
+                &path,
+                ServicePatch {
+                    interface: Some("../bad".into()),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        set_service(
+            &path,
+            ServicePatch {
+                interface: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(Config::load(&path).unwrap().server.interface.is_empty());
     }
 }

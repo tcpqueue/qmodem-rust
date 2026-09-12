@@ -16,6 +16,9 @@
       "file": {
         "/usr/sbin/qmodemd --config /etc/qmodem-rust.toml service-info": [
           "exec"
+        ],
+        "/usr/sbin/qmodemd --config /etc/qmodem-rust.toml interfaces": [
+          "exec"
         ]
       }
     },
@@ -29,7 +32,10 @@
         ]
       },
       "file": {
-        "/usr/sbin/qmodemd --config /etc/qmodem-rust.toml set-service --listen * --port *": [
+        "/usr/sbin/qmodemd --config /etc/qmodem-rust.toml set-service --listen * --port * --interface * --log-level * --log-format *": [
+          "exec"
+        ],
+        "/usr/sbin/qmodemd --config /etc/qmodem-rust.toml init-auth": [
           "exec"
         ]
       }

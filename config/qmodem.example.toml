@@ -4,9 +4,21 @@ version = 1
 [server]
 listen = "127.0.0.1"
 port = 8088
+# Linux 网络设备，如 br-lan、eth0；空字符串表示不限制网卡。
+interface = ""
+
+[logging]
+# off / error / warn / info / debug / trace
+level = "info"
+# text / json；输出到 stderr，由 procd 收集至系统日志。
+format = "text"
+
+[auth]
+# qmodemd init-auth 生成访问令牌并仅保存 SHA-256。非回环监听必须配置认证。
+token_hash = ""
 
 [storage]
-sqlite = "/var/lib/qmodem-rust/qmodem.sqlite3"
+sqlite = "/etc/qmodem-rust/data.sqlite3"
 
 # 模组业务尚在迁移中；以下字段先固定配置契约。
 # [[modems]]
@@ -14,6 +26,7 @@ sqlite = "/var/lib/qmodem-rust/qmodem.sqlite3"
 # name = "主模组"
 # enabled = true
 # manufacturer = "quectel"
+# model = "rm520n-gl"
 # platform = "qualcomm"
 # at_port = "/dev/ttyUSB2"
 # sms_at_port = "/dev/ttyUSB3"
@@ -21,3 +34,5 @@ sqlite = "/var/lib/qmodem-rust/qmodem.sqlite3"
 # bus = "usb"
 # pdp_index = 1
 # apn = ""
+
+# TD Tech MT5700 使用 manufacturer="tdtech"、model="mt5700m-cn"、platform="hisilicon"。
